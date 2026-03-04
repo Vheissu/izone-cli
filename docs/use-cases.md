@@ -30,11 +30,17 @@ izone on && izone mode cool && izone fan auto && izone temp 23 \
   && izone zone 0 --mode auto && izone zone 5 --mode auto
 ```
 
-### Shut everything down at bedtime
+### Bedtime with auto-restore
 
 ```bash
-izone sleep 60  # Auto-off in 1 hour
+# Save your normal settings, set bedtime mode, auto-restore when timer expires
+izone defaults save
+izone mode cool && izone fan low && izone temp 23
+izone zone 2 --mode auto  # Master bedroom only
+izone sleep 120 --restore  # Off in 2 hours, then restore defaults
 ```
+
+Or simply: `izone sleep 60` to auto-off in 1 hour.
 
 ### Check air quality before opening windows
 
@@ -176,13 +182,13 @@ With the MCP server configured, you can control your AC through natural conversa
 
 ### Smart multi-step requests
 
-These trigger a save/restore workflow — the MCP server automatically saves your current settings before making temporary changes, so you can restore them later.
+These trigger a save/restore workflow — the MCP server automatically saves your current settings before making temporary changes. If a sleep timer is set, defaults are restored automatically when it expires.
 
-- "It's bedtime — cool just the master bedroom to 23, close everything else, set fan to low, and set a 2 hour sleep timer"
+- "It's bedtime — cool just the master bedroom to 23, close everything else, set fan to low, and set a 2 hour sleep timer" (saves defaults, applies bedtime settings, auto-restores in 2 hours)
 - "I'm working from home today — cool the study and kitchen to 23"
 - "The house is hot — turn on the AC, find the hottest rooms, and cool them down"
 - "Set up a weekday morning schedule that pre-cools the kitchen and study from 6am to 8:30am"
-- "Restore my normal AC settings" (restores the saved defaults)
+- "Restore my normal AC settings" (manually restores saved defaults)
 
 ### Energy-conscious requests
 
@@ -219,3 +225,29 @@ hs.wifi.watcher.new(function()
     end
 end):start()
 ```
+
+### OpenClaw
+
+[OpenClaw](https://github.com/openclaw/openclaw) is an open-source AI agent with a heartbeat scheduler that can autonomously monitor and control your AC.
+
+**Setup**: Add to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "mcpServers": {
+    "izone": {
+      "command": "python3",
+      "args": ["/path/to/izone-cli/izone_mcp_server.py"]
+    }
+  }
+}
+```
+
+**Heartbeat use cases**:
+
+- **Temperature watchdog**: Schedule OpenClaw to check temps every 15 minutes and cool rooms that exceed a threshold
+- **Overnight monitoring**: Have OpenClaw check air quality (eCO2/TVOC) and adjust ventilation mode if levels spike
+- **Morning pre-cool**: OpenClaw wakes up at 6am, checks the weather forecast, and pre-cools the house accordingly
+- **Energy awareness**: Monitor run time and suggest more efficient zone configurations based on usage patterns
+
+OpenClaw's heartbeat scheduler means the agent runs proactively — it doesn't wait for you to ask. Combined with the iZone MCP server, it can act as a fully autonomous climate controller.

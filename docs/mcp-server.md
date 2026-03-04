@@ -87,7 +87,9 @@ Zone indexes and names are specific to your iZone installation. Use `izone_statu
 
 ## Configuration
 
-In `~/.claude/settings.json`:
+### Claude Code
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -100,6 +102,42 @@ In `~/.claude/settings.json`:
   }
 }
 ```
+
+### OpenAI Codex
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.izone]
+command = "python3"
+args = ["/path/to/izone-cli/izone_mcp_server.py"]
+```
+
+Or via CLI: `codex mcp add izone -- python3 /path/to/izone-cli/izone_mcp_server.py`
+
+### OpenClaw
+
+Add to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "mcpServers": {
+    "izone": {
+      "command": "python3",
+      "args": ["/path/to/izone-cli/izone_mcp_server.py"],
+      "env": {}
+    }
+  }
+}
+```
+
+OpenClaw's heartbeat scheduler can periodically check temperatures and take action autonomously — see [use-cases.md](use-cases.md) for examples.
+
+### Other MCP Clients
+
+Any MCP-compatible client that supports stdio servers can use the iZone MCP server. The configuration typically requires:
+- **Command**: `python3`
+- **Args**: `["/path/to/izone-cli/izone_mcp_server.py"]`
 
 Restart your MCP client after any configuration change.
 

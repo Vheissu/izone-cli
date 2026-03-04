@@ -84,7 +84,9 @@ The MCP server lets any MCP-compatible AI assistant control your AC through natu
 
 ### Configuration
 
-Add to your MCP client configuration (e.g. `~/.claude/settings.json` for Claude Code):
+Works with Claude Code, OpenAI Codex, OpenClaw, and any MCP-compatible client. See [docs/mcp-server.md](docs/mcp-server.md) for configuration for each platform.
+
+Example for Claude Code (`~/.claude/settings.json`):
 
 ```json
 {

@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+"""iZone CLI - Control your iZone air conditioning from the terminal."""
+
+import argparse
+import json
+import socket
+import sys
+import urllib.request
+
+DISCOVERY_PORT = 12107
+DISCOVERY_MSG = b"IASD"
+DISCOVERY_TIMEOUT = 3
+HTTP_TIMEOUT = 5
+
+MODES = {"cool": 1, "heat": 2, "vent": 3, "dry": 4, "auto": 5}
+MODES_REV = {v: k for k, v in MODES.items()}
+FAN_SPEEDS = {"low": 1, "medium": 2, "high": 3, "auto": 4, "top": 5}
+FAN_REV = {v: k for k, v in FAN_SPEEDS.items()}
+ZONE_MODES = {"open": 1, "close": 2, "auto": 3, "override": 4, "constant": 5}
+ZONE_MODES_REV = {v: k for k, v in ZONE_MODES.items()}
+
+CONFIG_FILE = None
+
+
+def discover():
+    """Discover iZone bridge on the local network."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.settimeout(DISCOVERY_TIMEOUT)
+    sock.sendto(DISCOVERY_MSG, ("255.255.255.255", DISCOVERY_PORT))
+    bridges = []
+    try:
+        while True:
+            data, addr = sock.recvfrom(1024)
+            text = data.decode("utf-8", errors="replace")
+            parts = dict(p.split("_", 1) for p in text.split(",") if "_" in p)
+            bridges.append({
+                "ip": parts.get("IP", addr[0]),
+                "mac": parts.get("Mac", "unknown"),
+                "port": parts.get("ASPort", "12107"),
+                "features": text,
+            })
+    except socket.timeout:
+        pass
+    finally:
+        sock.close()
+    return bridges
+
+
+def post(ip, endpoint, payload):
+    """Send a POST request to the iZone bridge using raw socket to avoid chunked encoding."""
+    import http.client
+    conn = http.client.HTTPConnection(ip, 80, timeout=HTTP_TIMEOUT)
+    body = json.dumps(payload)
+    conn.request("POST", endpoint, body=body, headers={"Content-Type": "application/json"})
+    resp = conn.getresponse()
+    raw = resp.read().decode("utf-8", errors="replace").strip()
+    conn.close()
+    if raw.endswith("{OK}"):
+        raw = raw[:-4]
+    return raw
+
+
+def query_system(ip):
+    """Query system settings."""
+    raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}})
+    return json.loads(raw)
+
+
+def query_zone(ip, index):
+    """Query a specific zone."""
+    raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}})
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Sometimes the bridge returns OK or malformed data; retry once
+        import time
+        time.sleep(0.3)
+        raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}})
+        data = json.loads(raw)
+    return data
+
+
+def send_command(ip, payload):
+    """Send a control command."""
+    raw = post(ip, "/iZoneCommandV2", payload)
+    return raw
+
+
+def get_ip(args):
+    """Get bridge IP from args, cache, or discovery."""
+    if args.ip:
+        return args.ip
+    # Check cache file
+    import os, time
+    cache_dir = os.path.expanduser("~/.config/izone")
+    cache_file = os.path.join(cache_dir, "bridge_ip")
+    if os.path.exists(cache_file):
+        # Use cache if less than 1 hour old
+        if time.time() - os.path.getmtime(cache_file) < 3600:
+            with open(cache_file) as f:
+                ip = f.read().strip()
+                if ip:
+                    return ip
+    bridges = discover()
+    if not bridges:
+        print("No iZone bridge found on the network.", file=sys.stderr)
+        sys.exit(1)
+    if len(bridges) > 1:
+        print(f"Found {len(bridges)} bridges, using first: {bridges[0]['ip']}", file=sys.stderr)
+    ip = bridges[0]["ip"]
+    # Cache the IP
+    os.makedirs(cache_dir, exist_ok=True)
+    with open(cache_file, "w") as f:
+        f.write(ip)
+    # Small delay after UDP discovery before HTTP requests
+    time.sleep(0.5)
+    return ip
+
+
+def fmt_temp(val):
+    """Format temperature value (divide by 100)."""
+    if isinstance(val, (int, float)):
+        return f"{val / 100:.1f}C"
+    return str(val)
+
+
+def cmd_discover(args):
+    bridges = discover()
+    if not bridges:
+        print("No iZone bridges found.")
+        return
+    for b in bridges:
+        print(f"  IP: {b['ip']}  MAC: {b['mac']}  Features: {b['features']}")
+
+
+def cmd_status(args):
+    ip = get_ip(args)
+    data = query_system(ip)
+    s = data["SystemV2"]
+    on_off = "ON" if s["SysOn"] else "OFF"
+    mode = MODES_REV.get(s["SysMode"], str(s["SysMode"]))
+    fan = FAN_REV.get(s["SysFan"], str(s["SysFan"]))
+
+    print(f"System:      {on_off}")
+    print(f"Mode:        {mode}")
+    print(f"Fan:         {fan}")
+    print(f"Setpoint:    {fmt_temp(s['Setpoint'])}")
+    print(f"Return Air:  {fmt_temp(s['Temp'])}")
+    print(f"Supply Air:  {fmt_temp(s['Supply'])}")
+    if s.get("InRh"):
+        print(f"Humidity:    {s['InRh']}%")
+    if s.get("IneCO2"):
+        print(f"eCO2:        {s['IneCO2']} ppm")
+    if s.get("InTVOC"):
+        print(f"TVOC:        {s['InTVOC']} ppb")
+    print(f"Zones:       {s['NoOfZones']}")
+    if s.get("Warnings") and s["Warnings"] != "none":
+        print(f"Warnings:    {s['Warnings']}")
+    print()
+
+    # Zone table
+    num_zones = s["NoOfZones"]
+    print(f"{'#':<3} {'Name':<12} {'Temp':>6} {'Set':>6} {'Mode':<10} {'Air%':>5}")
+    print("-" * 48)
+    for i in range(num_zones):
+        zdata = query_zone(ip, i)
+        z = zdata.get("ZonesV2", zdata)
+        zmode = ZONE_MODES_REV.get(z["Mode"], str(z["Mode"]))
+        print(f"{i:<3} {z['Name']:<12} {fmt_temp(z['Temp']):>6} {fmt_temp(z['Setpoint']):>6} {zmode:<10} {z['MaxAir']:>4}%")
+
+
+def cmd_on(args):
+    ip = get_ip(args)
+    result = send_command(ip, {"SysOn": 1})
+    print(f"System ON ({result})")
+
+
+def cmd_off(args):
+    ip = get_ip(args)
+    result = send_command(ip, {"SysOn": 0})
+    print(f"System OFF ({result})")
+
+
+def cmd_mode(args):
+    ip = get_ip(args)
+    mode_val = args.mode.lower()
+    if mode_val not in MODES:
+        print(f"Invalid mode. Choose from: {', '.join(MODES.keys())}", file=sys.stderr)
+        sys.exit(1)
+    result = send_command(ip, {"SysMode": mode_val})
+    print(f"Mode set to {mode_val} ({result})")
+
+
+def cmd_fan(args):
+    ip = get_ip(args)
+    fan_val = args.speed.lower()
+    if fan_val not in FAN_SPEEDS:
+        print(f"Invalid fan speed. Choose from: {', '.join(FAN_SPEEDS.keys())}", file=sys.stderr)
+        sys.exit(1)
+    result = send_command(ip, {"SysFan": fan_val})
+    print(f"Fan set to {fan_val} ({result})")
+
+
+def cmd_temp(args):
+    ip = get_ip(args)
+    temp = float(args.temp)
+    if temp < 15 or temp > 30:
+        print("Temperature must be between 15.0 and 30.0", file=sys.stderr)
+        sys.exit(1)
+    setpoint = int(temp * 100)
+    result = send_command(ip, {"SysSetpoint": setpoint})
+    print(f"Temperature set to {temp}C ({result})")
+
+
+def cmd_zone(args):
+    ip = get_ip(args)
+    index = args.zone
+
+    if args.zone_mode:
+        zmode = args.zone_mode.lower()
+        if zmode not in ZONE_MODES:
+            print(f"Invalid zone mode. Choose from: {', '.join(ZONE_MODES.keys())}", file=sys.stderr)
+            sys.exit(1)
+        result = send_command(ip, {"ZoneMode": {"Index": index, "Mode": ZONE_MODES[zmode]}})
+        print(f"Zone {index} mode set to {zmode} ({result})")
+
+    if args.zone_temp is not None:
+        temp = float(args.zone_temp)
+        if temp < 15 or temp > 30:
+            print("Temperature must be between 15.0 and 30.0", file=sys.stderr)
+            sys.exit(1)
+        setpoint = int(temp * 100)
+        # Round to nearest 50 (0.5C increments)
+        setpoint = round(setpoint / 50) * 50
+        result = send_command(ip, {"ZoneSetpoint": {"Index": index, "Setpoint": setpoint}})
+        print(f"Zone {index} temperature set to {setpoint / 100:.1f}C ({result})")
+
+    if args.max_air is not None:
+        air = int(args.max_air)
+        air = max(0, min(100, round(air / 5) * 5))
+        result = send_command(ip, {"ZoneMaxAir": {"Index": index, "MaxAir": air}})
+        print(f"Zone {index} max airflow set to {air}% ({result})")
+
+    if args.min_air is not None:
+        air = int(args.min_air)
+        air = max(0, min(100, round(air / 5) * 5))
+        result = send_command(ip, {"ZoneMinAir": {"Index": index, "MinAir": air}})
+        print(f"Zone {index} min airflow set to {air}% ({result})")
+
+    if not any([args.zone_mode, args.zone_temp is not None, args.max_air is not None, args.min_air is not None]):
+        # Just show zone info
+        z = query_zone(ip, index).get("ZonesV2", query_zone(ip, index))
+        zmode = ZONE_MODES_REV.get(z["Mode"], str(z["Mode"]))
+        print(f"Zone {index}: {z['Name']}")
+        print(f"  Temp:     {fmt_temp(z['Temp'])}")
+        print(f"  Setpoint: {fmt_temp(z['Setpoint'])}")
+        print(f"  Mode:     {zmode}")
+        print(f"  Max Air:  {z['MaxAir']}%")
+        print(f"  Min Air:  {z['MinAir']}%")
+
+
+def cmd_json(args):
+    """Output raw JSON for scripting."""
+    ip = get_ip(args)
+    data = query_system(ip)
+    s = data["SystemV2"]
+    zones = []
+    for i in range(s["NoOfZones"]):
+        z = query_zone(ip, i)
+        zones.append(z.get("ZonesV2", z))
+    output = {"system": s, "zones": zones}
+    print(json.dumps(output, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="iZone AC Control CLI",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Examples:
+  izone status                    Show system and zone status
+  izone on                        Turn system on
+  izone off                       Turn system off
+  izone mode cool                 Set to cool mode
+  izone fan auto                  Set fan to auto
+  izone temp 22                   Set system temperature to 22C
+  izone zone 2 --mode auto        Set zone 2 (Master) to auto mode
+  izone zone 2 --temp 23          Set zone 2 temperature to 23C
+  izone zone 5 --max-air 80       Set zone 5 max airflow to 80%
+  izone json                      Output full status as JSON
+  izone discover                  Find iZone bridges on network
+""",
+    )
+    parser.add_argument("--ip", help="Bridge IP (auto-discovered if not set)")
+
+    sub = parser.add_subparsers(dest="command")
+
+    sub.add_parser("discover", help="Find iZone bridges on the network")
+    sub.add_parser("status", help="Show system and zone status")
+    sub.add_parser("on", help="Turn system on")
+    sub.add_parser("off", help="Turn system off")
+
+    mode_p = sub.add_parser("mode", help="Set operating mode")
+    mode_p.add_argument("mode", choices=list(MODES.keys()))
+
+    fan_p = sub.add_parser("fan", help="Set fan speed")
+    fan_p.add_argument("speed", choices=list(FAN_SPEEDS.keys()))
+
+    temp_p = sub.add_parser("temp", help="Set system temperature (15-30)")
+    temp_p.add_argument("temp", type=float)
+
+    zone_p = sub.add_parser("zone", help="Query or control a zone")
+    zone_p.add_argument("zone", type=int, help="Zone index (0-based)")
+    zone_p.add_argument("--mode", dest="zone_mode", choices=list(ZONE_MODES.keys()))
+    zone_p.add_argument("--temp", dest="zone_temp", type=float, help="Zone temperature (15-30)")
+    zone_p.add_argument("--max-air", type=int, help="Max airflow percentage (0-100)")
+    zone_p.add_argument("--min-air", type=int, help="Min airflow percentage (0-100)")
+
+    sub.add_parser("json", help="Output full status as JSON (for scripting)")
+
+    args = parser.parse_args()
+
+    if not args.command:
+        # Default to status
+        args.command = "status"
+        cmd_status(args)
+        return
+
+    commands = {
+        "discover": cmd_discover,
+        "status": cmd_status,
+        "on": cmd_on,
+        "off": cmd_off,
+        "mode": cmd_mode,
+        "fan": cmd_fan,
+        "temp": cmd_temp,
+        "zone": cmd_zone,
+        "json": cmd_json,
+    }
+
+    fn = commands.get(args.command)
+    if fn:
+        fn(args)
+    else:
+        parser.print_help()
+
+
+if __name__ == "__main__":
+    main()

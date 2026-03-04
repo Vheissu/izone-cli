@@ -226,6 +226,34 @@ def cmd_airquality(args):
         print("No air quality sensors detected.")
 
 
+def schedule_restore(minutes):
+    """Spawn a background process that restores defaults after the given minutes."""
+    import os, subprocess
+    script = get_defaults_path().replace("defaults.json", "restore_pending")
+    # Write a marker file so we can cancel if needed
+    os.makedirs(os.path.dirname(script), exist_ok=True)
+    with open(script, "w") as f:
+        f.write(str(os.getpid()))
+    # Launch background restore process
+    izone_path = os.path.realpath(__file__)
+    subprocess.Popen(
+        ["bash", "-c", f'sleep {minutes * 60} && [ -f "{script}" ] && "{sys.executable}" "{izone_path}" defaults restore && rm -f "{script}"'],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def cancel_pending_restore():
+    """Cancel any pending scheduled restore."""
+    import os
+    script = get_defaults_path().replace("defaults.json", "restore_pending")
+    if os.path.exists(script):
+        os.remove(script)
+        return True
+    return False
+
+
 def cmd_sleep(args):
     ip = get_ip(args)
     minutes = int(args.minutes)
@@ -234,9 +262,18 @@ def cmd_sleep(args):
         sys.exit(1)
     result = send_command(ip, {"SysSleepTimer": minutes})
     if minutes == 0:
+        cancel_pending_restore()
         print(f"Sleep timer cleared ({result})")
     else:
-        print(f"Sleep timer set to {minutes} min ({result})")
+        if args.restore:
+            import os
+            if not os.path.exists(get_defaults_path()):
+                print("No saved defaults found. Run 'izone defaults save' first.", file=sys.stderr)
+                sys.exit(1)
+            schedule_restore(minutes)
+            print(f"Sleep timer set to {minutes} min, defaults will restore after ({result})")
+        else:
+            print(f"Sleep timer set to {minutes} min ({result})")
 
 
 def cmd_on(args):
@@ -676,6 +713,7 @@ def main():
 
     sleep_p = sub.add_parser("sleep", help="Set sleep timer (0 to clear)")
     sleep_p.add_argument("minutes", type=int, help="Minutes until auto-off (0 to clear)")
+    sleep_p.add_argument("--restore", action="store_true", help="Auto-restore saved defaults when timer expires")
 
     mode_p = sub.add_parser("mode", help="Set operating mode")
     mode_p.add_argument("mode", choices=list(MODES.keys()))

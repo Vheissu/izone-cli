@@ -258,18 +258,50 @@ def izone_zone_control(zone_index: int, mode: str = "", temperature: float = 0, 
     return f"Zone {zone_index}: " + "; ".join(results)
 
 
+def _schedule_restore(minutes: int):
+    """Spawn a background process that restores defaults after the given minutes."""
+    import subprocess, sys
+    restore_marker = DEFAULTS_FILE.replace("defaults.json", "restore_pending")
+    os.makedirs(os.path.dirname(restore_marker), exist_ok=True)
+    with open(restore_marker, "w") as f:
+        f.write(str(os.getpid()))
+    izone_cli = os.path.join(os.path.dirname(os.path.realpath(__file__)), "izone")
+    subprocess.Popen(
+        ["bash", "-c", f'sleep {minutes * 60} && [ -f "{restore_marker}" ] && "{sys.executable}" "{izone_cli}" defaults restore && rm -f "{restore_marker}"'],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def _cancel_pending_restore():
+    restore_marker = DEFAULTS_FILE.replace("defaults.json", "restore_pending")
+    if os.path.exists(restore_marker):
+        os.remove(restore_marker)
+
+
 @mcp.tool()
-def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan: str = "auto") -> str:
-    """Quick comfort setup - turn on the AC, set mode/fan/temp, and open specified zones in auto mode. Closes all other zones.
+def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan: str = "auto", sleep_timer: int = 0) -> str:
+    """Quick comfort setup - turn on the AC, set mode/fan/temp, and open specified zones in auto mode.
+    Closes all other zones. Automatically saves defaults before making changes.
+
+    If sleep_timer is set, the AC will turn off after that many minutes AND defaults will be
+    automatically restored — so temporary settings like bedtime mode don't become permanent.
 
     Args:
         zones: Comma-separated zone indexes to activate (e.g., "0,2" for the first and third zones)
         temperature: Target temperature in Celsius (15.0 to 30.0)
         mode: AC mode - "cool", "heat", "vent", "dry", "auto" (default: cool)
         fan: Fan speed - "low", "medium", "high", "auto", "top" (default: auto)
+        sleep_timer: Minutes until auto-off with auto-restore of defaults (0 to disable)
     """
-    active_zones = [int(z.strip()) for z in zones.split(",")]
     results = []
+
+    # Save defaults before making temporary changes
+    izone_defaults_save()
+    results.append("Defaults saved")
+
+    active_zones = [int(z.strip()) for z in zones.split(",")]
 
     # Turn on
     r = _send_command({"SysOn": 1})
@@ -303,6 +335,12 @@ def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan:
         else:
             _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES["close"]}})
             results.append(f"Zone {i}: closed")
+
+    # Set sleep timer and schedule auto-restore
+    if sleep_timer > 0:
+        _send_command({"SysSleepTimer": sleep_timer})
+        _schedule_restore(sleep_timer)
+        results.append(f"Sleep timer: {sleep_timer} min (defaults will auto-restore)")
 
     return "\n".join(results)
 

@@ -40,7 +40,7 @@ Sets the system target temperature.
 
 ### `izone_zone_control`
 Controls an individual zone. Only pass the parameters you want to change.
-- `zone_index`: 0–6 (see zone map below)
+- `zone_index`: 0-based (run `izone_status` to see available zones)
 - `mode`: `"open"`, `"close"`, or `"auto"` (optional)
 - `temperature`: Zone setpoint, 15.0–30.0 (optional)
 - `max_airflow`: Max airflow percentage, 0–100 (optional)
@@ -53,17 +53,9 @@ One-shot comfort command. Turns on the AC, sets mode/fan/temp, opens specified z
 - `mode`: AC mode (default: `"cool"`)
 - `fan`: Fan speed (default: `"auto"`)
 
-## Zone Map
+## Zone Discovery
 
-| Index | Name |
-|---|---|
-| 0 | Dining |
-| 1 | Lounge |
-| 2 | Master |
-| 3 | Lavinia |
-| 4 | Daedalus |
-| 5 | Study |
-| 6 | Upstairs |
+Zone indexes and names are specific to your iZone installation. Use `izone_status` (or `izone status` from the CLI) to see your available zones. The MCP server dynamically queries zone count and names from your bridge.
 
 ## Configuration
 
@@ -74,7 +66,7 @@ In `~/.claude/settings.json`:
   "mcpServers": {
     "izone": {
       "command": "python3",
-      "args": ["/Users/dwayne/code/izone-cli/izone_mcp_server.py"],
+      "args": ["/path/to/izone-cli/izone_mcp_server.py"],
       "env": {}
     }
   }

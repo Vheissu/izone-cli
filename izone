@@ -284,7 +284,7 @@ def main():
   izone mode cool                 Set to cool mode
   izone fan auto                  Set fan to auto
   izone temp 22                   Set system temperature to 22C
-  izone zone 2 --mode auto        Set zone 2 (Master) to auto mode
+  izone zone 2 --mode auto        Set zone 2 to auto mode
   izone zone 2 --temp 23          Set zone 2 temperature to 23C
   izone zone 5 --max-air 80       Set zone 5 max airflow to 80%
   izone json                      Output full status as JSON

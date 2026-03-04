@@ -56,7 +56,7 @@ Client                          Network                       Bridge
   │                                │                            │
   │                                │◄── UDP response ───────────│
   │◄───────────────────────────────│                            │
-  │  "ASPort_12107,Mac_000065288,IP_192.168.50.15,iZoneV2,..." │
+  │  "ASPort_12107,Mac_000000000,IP_192.168.1.100,iZoneV2,..." │
   │                                                             │
   │  Cache IP to ~/.config/izone/bridge_ip                      │
 ```

@@ -10,7 +10,7 @@ import time
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("izone", instructions="""You control an iZone ducted air conditioning system.
-The system has 7 zones: Dining(0), Lounge(1), Master(2), Lavinia(3), Daedalus(4), Study(5), Upstairs(6).
+Use the izone_status tool to discover the number of zones and their names before making changes.
 Temperature values from the API are multiplied by 100 (e.g., 2400 = 24.0C).
 When setting temperatures, accept normal values like 22.5 and convert to API format internally.
 Always check current status before making changes. Be energy-conscious.""")
@@ -196,17 +196,19 @@ def izone_temperature(temperature: float) -> str:
 def izone_zone_control(zone_index: int, mode: str = "", temperature: float = 0, max_airflow: int = -1, min_airflow: int = -1) -> str:
     """Control a specific zone. Pass only the parameters you want to change.
 
-    Zone indexes: 0=Dining, 1=Lounge, 2=Master, 3=Lavinia, 4=Daedalus, 5=Study, 6=Upstairs
+    Use izone_status first to see available zone indexes and names.
 
     Args:
-        zone_index: Zone number (0-6)
+        zone_index: Zone number (0-based, run izone_status to see available zones)
         mode: Zone mode - "open", "close", or "auto" (empty string to leave unchanged)
         temperature: Zone temperature setpoint in Celsius, 15.0-30.0 (0 to leave unchanged)
         max_airflow: Max airflow percentage 0-100 (-1 to leave unchanged)
         min_airflow: Min airflow percentage 0-100 (-1 to leave unchanged)
     """
-    if zone_index < 0 or zone_index > 6:
-        return "Error: zone_index must be 0-6"
+    sys_data = _query_system()
+    num_zones = sys_data["SystemV2"]["NoOfZones"]
+    if zone_index < 0 or zone_index >= num_zones:
+        return f"Error: zone_index must be 0-{num_zones - 1}"
 
     results = []
 
@@ -256,7 +258,7 @@ def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan:
     """Quick comfort setup - turn on the AC, set mode/fan/temp, and open specified zones in auto mode. Closes all other zones.
 
     Args:
-        zones: Comma-separated zone indexes to activate (e.g., "2,5" for Master and Study)
+        zones: Comma-separated zone indexes to activate (e.g., "0,2" for the first and third zones)
         temperature: Target temperature in Celsius (15.0 to 30.0)
         mode: AC mode - "cool", "heat", "vent", "dry", "auto" (default: cool)
         fan: Fan speed - "low", "medium", "high", "auto", "top" (default: auto)
@@ -285,7 +287,9 @@ def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan:
     results.append(f"Temp: {temperature}C ({r})")
 
     # Configure zones
-    for i in range(7):
+    sys_data = _query_system()
+    num_zones = sys_data["SystemV2"]["NoOfZones"]
+    for i in range(num_zones):
         time.sleep(0.2)
         if i in active_zones:
             _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES["auto"]}})

@@ -33,7 +33,7 @@ print(data.decode())
 ### Response Format
 
 ```
-ASPort_12107,Mac_000065288,IP_192.168.50.15,iZoneV2,iLight,iDrate,iPower,Split
+ASPort_12107,Mac_000000000,IP_192.168.1.100,iZoneV2,iLight,iDrate,iPower,Split
 ```
 
 | Field | Description |
@@ -87,7 +87,7 @@ The bridge broadcasts these messages when state changes:
 
 ```json
 {
-  "AirStreamDeviceUId": "000065288",
+  "AirStreamDeviceUId": "000000000",
   "DeviceType": "ASH",
   "SystemV2": {
     "SysOn": 0,
@@ -122,11 +122,11 @@ The bridge broadcasts these messages when state changes:
 
 ```json
 {
-  "AirStreamDeviceUId": "000065288",
+  "AirStreamDeviceUId": "000000000",
   "DeviceType": "ASH",
   "ZonesV2": {
     "Index": 5,
-    "Name": "Study",
+    "Name": "Bedroom",
     "ZoneType": 3,
     "Mode": 3,
     "Setpoint": 2400,

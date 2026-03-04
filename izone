@@ -365,7 +365,7 @@ def cmd_schedules(args):
             fan = FAN_REV.get(s.get("Fan"), str(s.get("Fan", "?")))
             days = fmt_days(s.get("DaysEnabled", {}))
             print(f"{i:<3} {name:<16} {enabled:<9} {start:>5} {stop:>5}  {mode:<6} {fan:<7} {days}")
-        except Exception:
+        except (json.JSONDecodeError, KeyError):
             print(f"{i:<3} (unavailable)")
 
 

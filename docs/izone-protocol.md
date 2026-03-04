@@ -255,6 +255,69 @@ Range: 0–100, in steps of 5 (percentage).
 
 Maximum 15 characters.
 
+### Schedule Commands
+
+9 schedule slots are available (index 0–8). Schedules store a full AC configuration (mode, fan, per-zone settings) that can be triggered on a timer or run on demand as a scene/favourite.
+
+#### Schedule Name
+
+```json
+{"SchedName": {"Index": 0, "Name": "Night Mode"}}
+```
+
+Maximum 15 characters.
+
+#### Schedule AC Mode
+
+```json
+{"SchedAcMode": {"Index": 0, "Mode": 1}}
+```
+
+Uses the same mode values as system mode (1=cool, 2=heat, etc.).
+
+#### Schedule Fan Speed
+
+```json
+{"SchedAcFan": {"Index": 0, "Fan": "medium"}}
+```
+
+Accepts string values: `"low"`, `"medium"`, `"high"`, `"auto"`, `"top"`.
+
+#### Schedule Timing and Days
+
+```json
+{"SchedSettings": {"Index": 0, "StartH": 7, "StartM": 30, "StopH": 22, "StopM": 0, "DaysEnabled": {"M": 1, "Tu": 1, "W": 1, "Th": 1, "F": 1, "Sa": 0, "Su": 0}}}
+```
+
+- `StartH`/`StopH`: 0–23, or 31 to disable
+- `StartM`/`StopM`: 0–59, or 63 to disable
+- `DaysEnabled`: 0 or 1 for each day
+- `DaysEnabled` is optional — omit to leave days unchanged
+
+#### Schedule Zone Settings
+
+```json
+{"SchedZones": {"Index": 0, "Zones": [{"Mode": 3, "Setpoint": 2400}, ...]}}
+```
+
+Array length must match the actual number of zones on the system (not the 14-slot maximum in the spec).
+
+#### Enable/Disable Schedule
+
+```json
+{"SchedEnable": {"Index": 0, "Enabled": 1}}
+```
+
+Values: `0` = disabled, `1` = enabled.
+
+#### Run Schedule Immediately (Favourite)
+
+```json
+{"FavouriteSet": 1}
+```
+
+Value is **1-based** (schedule index + 1). Activates the schedule as a scene without enabling its timer.
+
 ## Response Parsing Notes
 
 - Successful query responses may be suffixed with `{OK}` — strip this before JSON parsing.

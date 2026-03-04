@@ -53,6 +53,28 @@ One-shot comfort command. Turns on the AC, sets mode/fan/temp, opens specified z
 - `mode`: AC mode (default: `"cool"`)
 - `fan`: Fan speed (default: `"auto"`)
 
+### `izone_schedules`
+Lists all 9 schedule slots with name, enabled status, timing, mode, fan, and active days.
+
+### `izone_schedule_detail`
+Shows full details of a schedule slot including per-zone mode and setpoint.
+- `slot`: Schedule index (0–8)
+
+### `izone_schedule_edit`
+Modify a schedule's settings. Only pass the parameters you want to change.
+- `slot`: Schedule index (0–8)
+- `name`: Schedule name, max 15 chars (optional)
+- `mode`: AC mode (optional)
+- `fan`: Fan speed (optional)
+- `start`: Start time as `"HH:MM"` or `"off"` (optional)
+- `stop`: Stop time as `"HH:MM"` or `"off"` (optional)
+- `days`: Comma-separated days or `"weekdays"`, `"weekends"`, `"all"` (optional)
+- `enabled`: `true`/`false` (optional)
+
+### `izone_run_schedule`
+Runs a schedule immediately as a scene/favourite without enabling its timer.
+- `slot`: Schedule index (0–8)
+
 ## Zone Discovery
 
 Zone indexes and names are specific to your iZone installation. Use `izone_status` (or `izone status` from the CLI) to see your available zones. The MCP server dynamically queries zone count and names from your bridge.

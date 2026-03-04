@@ -53,6 +53,16 @@ izone zone 5 --mode auto --temp 22   # Combine options
 # Air quality readings (humidity, eCO2, TVOC)
 izone airquality
 
+# Schedules / scenes
+izone schedules                       # List all schedules
+izone schedule 2                      # View schedule details
+izone schedule 0 --name "Cool"        # Rename
+izone schedule 0 --mode cool --fan auto
+izone schedule 0 --start 07:30 --stop 22:00
+izone schedule 0 --days weekdays      # M,Tu,W,Th,F,Sa,Su,weekdays,weekends,all
+izone schedule 0 --enable yes         # Enable schedule
+izone run 2                           # Run schedule now (as a scene)
+
 # JSON output (for scripting)
 izone json
 

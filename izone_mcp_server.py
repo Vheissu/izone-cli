@@ -302,5 +302,175 @@ def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan:
     return "\n".join(results)
 
 
+NUM_SCHEDULE_SLOTS = 9
+
+
+def _query_schedule(index: int) -> dict:
+    raw = _post("/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        time.sleep(0.3)
+        raw = _post("/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
+        return json.loads(raw)
+
+
+def _fmt_sched_time(h, m):
+    if h >= 31 or m >= 63:
+        return "--:--"
+    return f"{h:02d}:{m:02d}"
+
+
+def _fmt_days(days):
+    day_map = [("M", "M"), ("Tu", "Tu"), ("W", "W"), ("Th", "Th"), ("F", "F"), ("Sa", "Sa"), ("Su", "Su")]
+    active = [label for key, label in day_map if days.get(key)]
+    return " ".join(active) if active else "none"
+
+
+@mcp.tool()
+def izone_schedules() -> str:
+    """List all schedule slots with name, enabled status, timing, mode, fan, and active days."""
+    lines = [f"{'#':<3} {'Name':<16} {'Enabled':<9} {'Start':>5} {'Stop':>5}  {'Mode':<6} {'Fan':<7} Days", "-" * 75]
+    for i in range(NUM_SCHEDULE_SLOTS):
+        try:
+            data = _query_schedule(i)
+            s = data.get("SchedulesV2", {})
+            name = s.get("Name", "").strip() or "(empty)"
+            enabled = "yes" if s.get("Enabled") else "no"
+            start = _fmt_sched_time(s.get("StartH", 255), s.get("StartM", 255))
+            stop = _fmt_sched_time(s.get("StopH", 255), s.get("StopM", 255))
+            mode = MODES_REV.get(s.get("Mode"), str(s.get("Mode", "?")))
+            fan = FAN_REV.get(s.get("Fan"), str(s.get("Fan", "?")))
+            days = _fmt_days(s.get("DaysEnabled", {}))
+            lines.append(f"{i:<3} {name:<16} {enabled:<9} {start:>5} {stop:>5}  {mode:<6} {fan:<7} {days}")
+        except (json.JSONDecodeError, KeyError):
+            lines.append(f"{i:<3} (unavailable)")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def izone_schedule_detail(slot: int) -> str:
+    """Show full details of a schedule slot including per-zone mode and setpoint.
+
+    Args:
+        slot: Schedule index (0-8)
+    """
+    if slot < 0 or slot >= NUM_SCHEDULE_SLOTS:
+        return f"Error: slot must be 0-{NUM_SCHEDULE_SLOTS - 1}"
+    try:
+        data = _query_schedule(slot)
+        s = data.get("SchedulesV2", {})
+    except Exception:
+        return f"Schedule {slot} is unavailable."
+    sys_data = _query_system()
+    num_zones = sys_data["SystemV2"]["NoOfZones"]
+    name = s.get("Name", "").strip() or "(empty)"
+    lines = [
+        f"Schedule {slot}: {name}",
+        f"  Enabled:  {'yes' if s.get('Enabled') else 'no'}",
+        f"  Start:    {_fmt_sched_time(s.get('StartH', 255), s.get('StartM', 255))}",
+        f"  Stop:     {_fmt_sched_time(s.get('StopH', 255), s.get('StopM', 255))}",
+        f"  Mode:     {MODES_REV.get(s.get('Mode'), str(s.get('Mode', '?')))}",
+        f"  Fan:      {FAN_REV.get(s.get('Fan'), str(s.get('Fan', '?')))}",
+        f"  Days:     {_fmt_days(s.get('DaysEnabled', {}))}",
+        "",
+        f"  {'#':<3} {'Mode':<10} {'Setpoint':>8}",
+        f"  {'-' * 24}",
+    ]
+    for zi, z in enumerate(s.get("Zones", [])[:num_zones]):
+        zmode = ZONE_MODES_REV.get(z.get("Mode"), str(z.get("Mode", "?")))
+        lines.append(f"  {zi:<3} {zmode:<10} {_fmt_temp(z.get('Setpoint', 0)):>7}C")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def izone_schedule_edit(slot: int, name: str = "", mode: str = "", fan: str = "", start: str = "", stop: str = "", days: str = "", enabled: str = "") -> str:
+    """Edit a schedule's settings. Only pass the parameters you want to change.
+
+    Args:
+        slot: Schedule index (0-8)
+        name: Schedule name, max 15 chars (empty to leave unchanged)
+        mode: AC mode - cool, heat, vent, dry, auto (empty to leave unchanged)
+        fan: Fan speed - low, medium, high, auto, top (empty to leave unchanged)
+        start: Start time as HH:MM or "off" to disable (empty to leave unchanged)
+        stop: Stop time as HH:MM or "off" to disable (empty to leave unchanged)
+        days: Comma-separated: M,Tu,W,Th,F,Sa,Su,weekdays,weekends,all (empty to leave unchanged)
+        enabled: "true" or "false" (empty to leave unchanged)
+    """
+    if slot < 0 or slot >= NUM_SCHEDULE_SLOTS:
+        return f"Error: slot must be 0-{NUM_SCHEDULE_SLOTS - 1}"
+    results = []
+    if name:
+        _send_command({"SchedName": {"Index": slot, "Name": name[:15]}})
+        results.append(f"Name set to \"{name[:15]}\"")
+    if mode:
+        if mode.lower() not in MODES:
+            return f"Error: mode must be one of: {', '.join(MODES.keys())}"
+        _send_command({"SchedAcMode": {"Index": slot, "Mode": MODES[mode.lower()]}})
+        results.append(f"Mode set to {mode}")
+    if fan:
+        if fan.lower() not in FAN_SPEEDS:
+            return f"Error: fan must be one of: {', '.join(FAN_SPEEDS.keys())}"
+        _send_command({"SchedAcFan": {"Index": slot, "Fan": fan.lower()}})
+        results.append(f"Fan set to {fan}")
+    if start or stop or days:
+        settings = {"Index": slot}
+        if start:
+            if start == "off":
+                settings["StartH"] = 31
+                settings["StartM"] = 63
+            else:
+                h, m = start.split(":")
+                settings["StartH"] = int(h)
+                settings["StartM"] = int(m)
+        if stop:
+            if stop == "off":
+                settings["StopH"] = 31
+                settings["StopM"] = 63
+            else:
+                h, m = stop.split(":")
+                settings["StopH"] = int(h)
+                settings["StopM"] = int(m)
+        if days:
+            day_keys = ["M", "Tu", "W", "Th", "F", "Sa", "Su"]
+            day_labels = {"m": "M", "tu": "Tu", "w": "W", "th": "Th", "f": "F", "sa": "Sa", "su": "Su"}
+            days_enabled = {k: 0 for k in day_keys}
+            for d in days.lower().split(","):
+                d = d.strip()
+                if d == "weekdays":
+                    for k in ["M", "Tu", "W", "Th", "F"]:
+                        days_enabled[k] = 1
+                elif d == "weekends":
+                    for k in ["Sa", "Su"]:
+                        days_enabled[k] = 1
+                elif d == "all":
+                    days_enabled = {k: 1 for k in day_keys}
+                elif d in day_labels:
+                    days_enabled[day_labels[d]] = 1
+            settings["DaysEnabled"] = days_enabled
+        _send_command({"SchedSettings": settings})
+        results.append("Timing updated")
+    if enabled:
+        val = 1 if enabled.lower() in ("true", "1", "yes", "on") else 0
+        _send_command({"SchedEnable": {"Index": slot, "Enabled": val}})
+        results.append("Enabled" if val else "Disabled")
+    if not results:
+        return "No changes specified."
+    return f"Schedule {slot}: " + "; ".join(results)
+
+
+@mcp.tool()
+def izone_run_schedule(slot: int) -> str:
+    """Run a schedule immediately as a scene/favourite without enabling its timer.
+
+    Args:
+        slot: Schedule index (0-8)
+    """
+    if slot < 0 or slot >= NUM_SCHEDULE_SLOTS:
+        return f"Error: slot must be 0-{NUM_SCHEDULE_SLOTS - 1}"
+    result = _send_command({"FavouriteSet": slot + 1})
+    return f"Schedule {slot} activated ({result})"
+
+
 if __name__ == "__main__":
     mcp.run()

@@ -176,10 +176,13 @@ With the MCP server configured, you can control your AC through natural conversa
 
 ### Smart multi-step requests
 
+These trigger a save/restore workflow — the MCP server automatically saves your current settings before making temporary changes, so you can restore them later.
+
 - "It's bedtime — cool just the master bedroom to 23, close everything else, set fan to low, and set a 2 hour sleep timer"
 - "I'm working from home today — cool the study and kitchen to 23"
 - "The house is hot — turn on the AC, find the hottest rooms, and cool them down"
 - "Set up a weekday morning schedule that pre-cools the kitchen and study from 6am to 8:30am"
+- "Restore my normal AC settings" (restores the saved defaults)
 
 ### Energy-conscious requests
 

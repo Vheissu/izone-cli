@@ -53,6 +53,11 @@ izone zone 5 --mode auto --temp 22   # Combine options
 # Air quality readings (humidity, eCO2, TVOC)
 izone airquality
 
+# Save and restore default settings
+izone defaults save                   # Snapshot current settings
+izone defaults show                   # View saved defaults
+izone defaults restore                # Restore saved defaults
+
 # Schedules / scenes
 izone schedules                       # List all schedules
 izone schedule 2                      # View schedule details

@@ -13,7 +13,12 @@ mcp = FastMCP("izone", instructions="""You control an iZone ducted air condition
 Use the izone_status tool to discover the number of zones and their names before making changes.
 Temperature values from the API are multiplied by 100 (e.g., 2400 = 24.0C).
 When setting temperatures, accept normal values like 22.5 and convert to API format internally.
-Always check current status before making changes. Be energy-conscious.""")
+Always check current status before making changes. Be energy-conscious.
+
+IMPORTANT: When making temporary changes (bedtime mode, working from home, etc.), ALWAYS call
+izone_defaults_save first to snapshot the current settings, then make your changes. This lets the
+user restore their normal settings later with izone_defaults_restore. Only skip saving if the user
+explicitly says they want permanent changes.""")
 
 # --- iZone protocol constants ---
 DISCOVERY_PORT = 12107
@@ -300,6 +305,65 @@ def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan:
             results.append(f"Zone {i}: closed")
 
     return "\n".join(results)
+
+
+DEFAULTS_FILE = os.path.expanduser("~/.config/izone/defaults.json")
+
+
+@mcp.tool()
+def izone_defaults_save() -> str:
+    """Save the current system and zone settings as defaults. Call this BEFORE making temporary changes
+    (bedtime mode, working from home, etc.) so the user can restore their normal settings later."""
+    data = _query_system()
+    s = data["SystemV2"]
+    num_zones = s["NoOfZones"]
+    defaults = {
+        "mode": s["SysMode"],
+        "fan": s["SysFan"],
+        "setpoint": s["Setpoint"],
+        "zones": [],
+    }
+    for i in range(num_zones):
+        zdata = _query_zone(i)
+        z = zdata.get("ZonesV2", zdata)
+        defaults["zones"].append({
+            "index": i,
+            "name": z["Name"],
+            "mode": z["Mode"],
+            "setpoint": z["Setpoint"],
+            "max_air": z["MaxAir"],
+            "min_air": z["MinAir"],
+        })
+    os.makedirs(os.path.dirname(DEFAULTS_FILE), exist_ok=True)
+    with open(DEFAULTS_FILE, "w") as f:
+        json.dump(defaults, f, indent=2)
+    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
+    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    return f"Defaults saved: mode={mode}, fan={fan}, temp={_fmt_temp(defaults['setpoint'])}C, {len(defaults['zones'])} zones"
+
+
+@mcp.tool()
+def izone_defaults_restore() -> str:
+    """Restore previously saved default settings. Use this to undo temporary changes and return
+    the system to its normal configuration."""
+    if not os.path.exists(DEFAULTS_FILE):
+        return "No saved defaults found. Save defaults first with izone_defaults_save."
+    with open(DEFAULTS_FILE) as f:
+        defaults = json.load(f)
+    _send_command({"SysMode": defaults["mode"]})
+    time.sleep(0.2)
+    _send_command({"SysFan": defaults["fan"]})
+    time.sleep(0.2)
+    _send_command({"SysSetpoint": defaults["setpoint"]})
+    for z in defaults["zones"]:
+        time.sleep(0.2)
+        _send_command({"ZoneMode": {"Index": z["index"], "Mode": z["mode"]}})
+        _send_command({"ZoneSetpoint": {"Index": z["index"], "Setpoint": z["setpoint"]}})
+        _send_command({"ZoneMaxAir": {"Index": z["index"], "MaxAir": z["max_air"]}})
+        _send_command({"ZoneMinAir": {"Index": z["index"], "MinAir": z["min_air"]}})
+    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
+    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    return f"Defaults restored: mode={mode}, fan={fan}, temp={_fmt_temp(defaults['setpoint'])}C, {len(defaults['zones'])} zones"
 
 
 NUM_SCHEDULE_SLOTS = 9

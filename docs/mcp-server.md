@@ -53,6 +53,12 @@ One-shot comfort command. Turns on the AC, sets mode/fan/temp, opens specified z
 - `mode`: AC mode (default: `"cool"`)
 - `fan`: Fan speed (default: `"auto"`)
 
+### `izone_defaults_save`
+Snapshots the current system and zone settings to disk. The MCP server is instructed to call this automatically before making temporary changes (bedtime mode, etc.) so settings can be restored later.
+
+### `izone_defaults_restore`
+Restores previously saved default settings — mode, fan, temperature, and all zone configurations.
+
 ### `izone_schedules`
 Lists all 9 schedule slots with name, enabled status, timing, mode, fan, and active days.
 

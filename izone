@@ -330,6 +330,120 @@ def cmd_zone(args):
         print(f"  Min Air:  {z['MinAir']}%")
 
 
+DEFAULTS_FILE = None
+
+
+def get_defaults_path():
+    import os
+    return os.path.expanduser("~/.config/izone/defaults.json")
+
+
+def cmd_defaults_save(args):
+    import os
+    ip = get_ip(args)
+    data = query_system(ip)
+    s = data["SystemV2"]
+    num_zones = s["NoOfZones"]
+
+    defaults = {
+        "mode": s["SysMode"],
+        "fan": s["SysFan"],
+        "setpoint": s["Setpoint"],
+        "zones": [],
+    }
+    for i in range(num_zones):
+        zdata = query_zone(ip, i)
+        z = zdata.get("ZonesV2", zdata)
+        defaults["zones"].append({
+            "index": i,
+            "name": z["Name"],
+            "mode": z["Mode"],
+            "setpoint": z["Setpoint"],
+            "max_air": z["MaxAir"],
+            "min_air": z["MinAir"],
+        })
+
+    path = get_defaults_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(defaults, f, indent=2)
+
+    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
+    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    print(f"Defaults saved to {path}")
+    print(f"  Mode: {mode}, Fan: {fan}, Temp: {fmt_temp(defaults['setpoint'])}")
+    print(f"  Zones: {len(defaults['zones'])}")
+
+
+def cmd_defaults_restore(args):
+    import os
+    path = get_defaults_path()
+    if not os.path.exists(path):
+        print("No saved defaults found. Run 'izone defaults save' first.", file=sys.stderr)
+        sys.exit(1)
+
+    with open(path) as f:
+        defaults = json.load(f)
+
+    ip = get_ip(args)
+    import time
+
+    send_command(ip, {"SysMode": defaults["mode"]})
+    time.sleep(0.2)
+    send_command(ip, {"SysFan": defaults["fan"]})
+    time.sleep(0.2)
+    send_command(ip, {"SysSetpoint": defaults["setpoint"]})
+
+    for z in defaults["zones"]:
+        time.sleep(0.2)
+        send_command(ip, {"ZoneMode": {"Index": z["index"], "Mode": z["mode"]}})
+        send_command(ip, {"ZoneSetpoint": {"Index": z["index"], "Setpoint": z["setpoint"]}})
+        send_command(ip, {"ZoneMaxAir": {"Index": z["index"], "MaxAir": z["max_air"]}})
+        send_command(ip, {"ZoneMinAir": {"Index": z["index"], "MinAir": z["min_air"]}})
+
+    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
+    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    print(f"Defaults restored: mode={mode}, fan={fan}, temp={fmt_temp(defaults['setpoint'])}")
+    print(f"  {len(defaults['zones'])} zones restored")
+
+
+def cmd_defaults_show(args):
+    import os
+    path = get_defaults_path()
+    if not os.path.exists(path):
+        print("No saved defaults found. Run 'izone defaults save' first.", file=sys.stderr)
+        sys.exit(1)
+
+    with open(path) as f:
+        defaults = json.load(f)
+
+    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
+    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    print(f"Saved defaults ({path}):")
+    print(f"  Mode:     {mode}")
+    print(f"  Fan:      {fan}")
+    print(f"  Setpoint: {fmt_temp(defaults['setpoint'])}")
+    print()
+    print(f"  {'#':<3} {'Name':<12} {'Set':>6} {'Mode':<10} {'Air%':>5}")
+    print(f"  {'-' * 40}")
+    for z in defaults["zones"]:
+        zmode = ZONE_MODES_REV.get(z["mode"], str(z["mode"]))
+        print(f"  {z['index']:<3} {z['name']:<12} {fmt_temp(z['setpoint']):>6} {zmode:<10} {z['max_air']:>4}%")
+
+
+def cmd_defaults(args):
+    action = args.action
+    if action == "save":
+        cmd_defaults_save(args)
+    elif action == "restore":
+        cmd_defaults_restore(args)
+    elif action == "show":
+        cmd_defaults_show(args)
+    else:
+        print("Usage: izone defaults {save|restore|show}", file=sys.stderr)
+        sys.exit(1)
+
+
 NUM_SCHEDULE_SLOTS = 9
 
 
@@ -533,6 +647,9 @@ def main():
   izone zone 2 --temp 23          Set zone 2 temperature to 23C
   izone zone 5 --max-air 80       Set zone 5 max airflow to 80%
   izone airquality                Show air quality readings
+  izone defaults save             Save current settings as defaults
+  izone defaults restore          Restore saved defaults
+  izone defaults show             Show saved defaults
   izone schedules                 List all schedules
   izone schedule 2                Show schedule 2 details
   izone schedule 0 --name "Cool"  Rename schedule 0
@@ -576,6 +693,9 @@ def main():
     zone_p.add_argument("--max-air", type=int, help="Max airflow percentage (0-100)")
     zone_p.add_argument("--min-air", type=int, help="Min airflow percentage (0-100)")
 
+    defaults_p = sub.add_parser("defaults", help="Save, restore, or show default settings")
+    defaults_p.add_argument("action", choices=["save", "restore", "show"], help="save/restore/show defaults")
+
     sub.add_parser("schedules", help="List all schedules")
 
     sched_p = sub.add_parser("schedule", help="View or edit a schedule")
@@ -614,6 +734,7 @@ def main():
         "fan": cmd_fan,
         "temp": cmd_temp,
         "zone": cmd_zone,
+        "defaults": cmd_defaults,
         "schedules": cmd_schedules,
         "schedule": cmd_schedule,
         "run": cmd_run_schedule,

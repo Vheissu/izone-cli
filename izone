@@ -87,6 +87,18 @@ def query_zone(ip, index):
     return data
 
 
+def query_schedule(ip, index):
+    """Query a specific schedule slot."""
+    raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        import time
+        time.sleep(0.3)
+        raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
+        return json.loads(raw)
+
+
 def send_command(ip, payload):
     """Send a control command."""
     raw = post(ip, "/iZoneCommandV2", payload)
@@ -318,6 +330,176 @@ def cmd_zone(args):
         print(f"  Min Air:  {z['MinAir']}%")
 
 
+NUM_SCHEDULE_SLOTS = 9
+
+
+def fmt_sched_time(h, m):
+    """Format schedule time, handling disabled values."""
+    if h >= 31 or m >= 63:
+        return "--:--"
+    return f"{h:02d}:{m:02d}"
+
+
+def fmt_days(days):
+    """Format days dict into a short string like 'M Tu W Th F'."""
+    day_map = [("M", "M"), ("Tu", "Tu"), ("W", "W"), ("Th", "Th"), ("F", "F"), ("Sa", "Sa"), ("Su", "Su")]
+    active = [label for key, label in day_map if days.get(key)]
+    return " ".join(active) if active else "none"
+
+
+def cmd_schedules(args):
+    ip = get_ip(args)
+    sys_data = query_system(ip)
+    num_zones = sys_data["SystemV2"]["NoOfZones"]
+    print(f"{'#':<3} {'Name':<16} {'Enabled':<9} {'Start':>5} {'Stop':>5}  {'Mode':<6} {'Fan':<7} Days")
+    print("-" * 75)
+    for i in range(NUM_SCHEDULE_SLOTS):
+        try:
+            data = query_schedule(ip, i)
+            s = data.get("SchedulesV2", {})
+            name = s.get("Name", "").strip() or "(empty)"
+            enabled = "yes" if s.get("Enabled") else "no"
+            start = fmt_sched_time(s.get("StartH", 255), s.get("StartM", 255))
+            stop = fmt_sched_time(s.get("StopH", 255), s.get("StopM", 255))
+            mode = MODES_REV.get(s.get("Mode"), str(s.get("Mode", "?")))
+            fan = FAN_REV.get(s.get("Fan"), str(s.get("Fan", "?")))
+            days = fmt_days(s.get("DaysEnabled", {}))
+            print(f"{i:<3} {name:<16} {enabled:<9} {start:>5} {stop:>5}  {mode:<6} {fan:<7} {days}")
+        except Exception:
+            print(f"{i:<3} (unavailable)")
+
+
+def cmd_schedule(args):
+    ip = get_ip(args)
+    index = args.slot
+
+    if index < 0 or index >= NUM_SCHEDULE_SLOTS:
+        print(f"Schedule slot must be 0-{NUM_SCHEDULE_SLOTS - 1}.", file=sys.stderr)
+        sys.exit(1)
+
+    # Handle modifications
+    changed = False
+
+    if args.name is not None:
+        if len(args.name) > 15:
+            print("Name must be 15 characters or less.", file=sys.stderr)
+            sys.exit(1)
+        send_command(ip, {"SchedName": {"Index": index, "Name": args.name}})
+        print(f"Schedule {index} name set to \"{args.name}\"")
+        changed = True
+
+    if args.sched_mode:
+        mode_val = args.sched_mode.lower()
+        if mode_val not in MODES:
+            print(f"Invalid mode. Choose from: {', '.join(MODES.keys())}", file=sys.stderr)
+            sys.exit(1)
+        send_command(ip, {"SchedAcMode": {"Index": index, "Mode": MODES[mode_val]}})
+        print(f"Schedule {index} mode set to {mode_val}")
+        changed = True
+
+    if args.sched_fan:
+        fan_val = args.sched_fan.lower()
+        if fan_val not in FAN_SPEEDS:
+            print(f"Invalid fan speed. Choose from: {', '.join(FAN_SPEEDS.keys())}", file=sys.stderr)
+            sys.exit(1)
+        send_command(ip, {"SchedAcFan": {"Index": index, "Fan": fan_val}})
+        print(f"Schedule {index} fan set to {fan_val}")
+        changed = True
+
+    if args.start is not None or args.stop is not None or args.days is not None:
+        settings = {"Index": index}
+        if args.start is not None:
+            if args.start == "off":
+                settings["StartH"] = 31
+                settings["StartM"] = 63
+            else:
+                parts = args.start.split(":")
+                settings["StartH"] = int(parts[0])
+                settings["StartM"] = int(parts[1])
+        if args.stop is not None:
+            if args.stop == "off":
+                settings["StopH"] = 31
+                settings["StopM"] = 63
+            else:
+                parts = args.stop.split(":")
+                settings["StopH"] = int(parts[0])
+                settings["StopM"] = int(parts[1])
+        if args.days is not None:
+            day_keys = ["M", "Tu", "W", "Th", "F", "Sa", "Su"]
+            day_labels = {"m": "M", "tu": "Tu", "w": "W", "th": "Th", "f": "F", "sa": "Sa", "su": "Su",
+                          "weekdays": None, "weekends": None, "all": None}
+            days_enabled = {k: 0 for k in day_keys}
+            for d in args.days.lower().split(","):
+                d = d.strip()
+                if d == "weekdays":
+                    for k in ["M", "Tu", "W", "Th", "F"]:
+                        days_enabled[k] = 1
+                elif d == "weekends":
+                    for k in ["Sa", "Su"]:
+                        days_enabled[k] = 1
+                elif d == "all":
+                    days_enabled = {k: 1 for k in day_keys}
+                elif d in day_labels:
+                    days_enabled[day_labels[d]] = 1
+                else:
+                    print(f"Unknown day: {d}. Use: M,Tu,W,Th,F,Sa,Su,weekdays,weekends,all", file=sys.stderr)
+                    sys.exit(1)
+            settings["DaysEnabled"] = days_enabled
+        send_command(ip, {"SchedSettings": settings})
+        print(f"Schedule {index} timing updated")
+        changed = True
+
+    if args.enable is not None:
+        val = 1 if args.enable.lower() in ("1", "yes", "true", "on") else 0
+        send_command(ip, {"SchedEnable": {"Index": index, "Enabled": val}})
+        print(f"Schedule {index} {'enabled' if val else 'disabled'}")
+        changed = True
+
+    if not changed:
+        # Show schedule details
+        try:
+            data = query_schedule(ip, index)
+            s = data.get("SchedulesV2", {})
+        except Exception:
+            print(f"Schedule {index} is unavailable.")
+            return
+        sys_data = query_system(ip)
+        num_zones = sys_data["SystemV2"]["NoOfZones"]
+        name = s.get("Name", "").strip() or "(empty)"
+        enabled = "yes" if s.get("Enabled") else "no"
+        start = fmt_sched_time(s.get("StartH", 255), s.get("StartM", 255))
+        stop = fmt_sched_time(s.get("StopH", 255), s.get("StopM", 255))
+        mode = MODES_REV.get(s.get("Mode"), str(s.get("Mode", "?")))
+        fan = FAN_REV.get(s.get("Fan"), str(s.get("Fan", "?")))
+        days = fmt_days(s.get("DaysEnabled", {}))
+
+        print(f"Schedule {index}: {name}")
+        print(f"  Enabled:  {enabled}")
+        print(f"  Start:    {start}")
+        print(f"  Stop:     {stop}")
+        print(f"  Mode:     {mode}")
+        print(f"  Fan:      {fan}")
+        print(f"  Days:     {days}")
+        print()
+        zones = s.get("Zones", [])
+        print(f"  {'#':<3} {'Mode':<10} {'Setpoint':>8}")
+        print(f"  {'-' * 24}")
+        for zi, z in enumerate(zones[:num_zones]):
+            zmode = ZONE_MODES_REV.get(z.get("Mode"), str(z.get("Mode", "?")))
+            print(f"  {zi:<3} {zmode:<10} {fmt_temp(z.get('Setpoint', 0)):>8}")
+
+
+def cmd_run_schedule(args):
+    ip = get_ip(args)
+    index = args.slot
+    if index < 0 or index >= NUM_SCHEDULE_SLOTS:
+        print(f"Schedule slot must be 0-{NUM_SCHEDULE_SLOTS - 1}.", file=sys.stderr)
+        sys.exit(1)
+    # FavouriteSet uses 1-based index
+    result = send_command(ip, {"FavouriteSet": index + 1})
+    print(f"Schedule {index} activated ({result})")
+
+
 def cmd_json(args):
     """Output raw JSON for scripting."""
     ip = get_ip(args)
@@ -351,6 +533,14 @@ def main():
   izone zone 2 --temp 23          Set zone 2 temperature to 23C
   izone zone 5 --max-air 80       Set zone 5 max airflow to 80%
   izone airquality                Show air quality readings
+  izone schedules                 List all schedules
+  izone schedule 2                Show schedule 2 details
+  izone schedule 0 --name "Cool"  Rename schedule 0
+  izone schedule 0 --mode cool --fan auto
+  izone schedule 0 --start 07:30 --stop 22:00
+  izone schedule 0 --days weekdays
+  izone schedule 0 --enable yes   Enable a schedule
+  izone run 2                     Run schedule 2 now (as a scene)
   izone json                      Output full status as JSON
   izone discover                  Find iZone bridges on network
 """,
@@ -386,6 +576,21 @@ def main():
     zone_p.add_argument("--max-air", type=int, help="Max airflow percentage (0-100)")
     zone_p.add_argument("--min-air", type=int, help="Min airflow percentage (0-100)")
 
+    sub.add_parser("schedules", help="List all schedules")
+
+    sched_p = sub.add_parser("schedule", help="View or edit a schedule")
+    sched_p.add_argument("slot", type=int, help="Schedule slot (0-8)")
+    sched_p.add_argument("--name", help="Set schedule name (max 15 chars)")
+    sched_p.add_argument("--mode", dest="sched_mode", choices=list(MODES.keys()), help="Set AC mode")
+    sched_p.add_argument("--fan", dest="sched_fan", choices=list(FAN_SPEEDS.keys()), help="Set fan speed")
+    sched_p.add_argument("--start", help="Start time HH:MM or 'off' to disable")
+    sched_p.add_argument("--stop", help="Stop time HH:MM or 'off' to disable")
+    sched_p.add_argument("--days", help="Days: M,Tu,W,Th,F,Sa,Su,weekdays,weekends,all")
+    sched_p.add_argument("--enable", help="Enable/disable: yes/no")
+
+    run_p = sub.add_parser("run", help="Run a schedule immediately (as a favourite/scene)")
+    run_p.add_argument("slot", type=int, help="Schedule slot (0-8)")
+
     sub.add_parser("json", help="Output full status as JSON (for scripting)")
 
     args = parser.parse_args()
@@ -409,6 +614,9 @@ def main():
         "fan": cmd_fan,
         "temp": cmd_temp,
         "zone": cmd_zone,
+        "schedules": cmd_schedules,
+        "schedule": cmd_schedule,
+        "run": cmd_run_schedule,
         "json": cmd_json,
     }
 

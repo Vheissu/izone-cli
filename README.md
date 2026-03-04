@@ -17,8 +17,14 @@ ln -sf /path/to/izone-cli/izone /opt/homebrew/bin/izone
 ## CLI Usage
 
 ```bash
-# System status (default if no command given)
+# Full status (system + zones, default if no command given)
 izone status
+
+# System info only (no zones)
+izone system
+
+# List all zones
+izone zones
 
 # Power
 izone on
@@ -33,12 +39,19 @@ izone fan auto
 # System temperature (15.0 - 30.0 C)
 izone temp 22
 
+# Sleep timer
+izone sleep 60                        # Auto-off in 60 minutes
+izone sleep 0                         # Clear timer
+
 # Zone control (by index)
 izone zone 2                          # View zone info
 izone zone 2 --mode auto             # Set zone to auto
 izone zone 2 --temp 23               # Set zone temperature
 izone zone 5 --max-air 80            # Set max airflow
 izone zone 5 --mode auto --temp 22   # Combine options
+
+# Air quality readings (humidity, eCO2, TVOC)
+izone airquality
 
 # JSON output (for scripting)
 izone json

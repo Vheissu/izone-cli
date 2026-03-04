@@ -64,7 +64,13 @@ def post(ip, endpoint, payload):
 def query_system(ip):
     """Query system settings."""
     raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}})
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        import time
+        time.sleep(0.3)
+        raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}})
+        return json.loads(raw)
 
 
 def query_zone(ip, index):
@@ -134,9 +140,10 @@ def cmd_discover(args):
         print(f"  IP: {b['ip']}  MAC: {b['mac']}  Features: {b['features']}")
 
 
-def cmd_status(args):
-    ip = get_ip(args)
-    data = query_system(ip)
+def print_system(ip, data=None):
+    """Print system-level info. Accepts optional pre-fetched data."""
+    if data is None:
+        data = query_system(ip)
     s = data["SystemV2"]
     on_off = "ON" if s["SysOn"] else "OFF"
     mode = MODES_REV.get(s["SysMode"], str(s["SysMode"]))
@@ -155,12 +162,17 @@ def cmd_status(args):
     if s.get("InTVOC"):
         print(f"TVOC:        {s['InTVOC']} ppb")
     print(f"Zones:       {s['NoOfZones']}")
+    if s.get("SleepTimer"):
+        print(f"Sleep Timer: {s['SleepTimer']} min")
     if s.get("Warnings") and s["Warnings"] != "none":
         print(f"Warnings:    {s['Warnings']}")
-    print()
 
-    # Zone table
-    num_zones = s["NoOfZones"]
+
+def print_zones(ip, data=None):
+    """Print zone table. Accepts optional pre-fetched system data for zone count."""
+    if data is None:
+        data = query_system(ip)
+    num_zones = data["SystemV2"]["NoOfZones"]
     print(f"{'#':<3} {'Name':<12} {'Temp':>6} {'Set':>6} {'Mode':<10} {'Air%':>5}")
     print("-" * 48)
     for i in range(num_zones):
@@ -168,6 +180,51 @@ def cmd_status(args):
         z = zdata.get("ZonesV2", zdata)
         zmode = ZONE_MODES_REV.get(z["Mode"], str(z["Mode"]))
         print(f"{i:<3} {z['Name']:<12} {fmt_temp(z['Temp']):>6} {fmt_temp(z['Setpoint']):>6} {zmode:<10} {z['MaxAir']:>4}%")
+
+
+def cmd_system(args):
+    ip = get_ip(args)
+    print_system(ip)
+
+
+def cmd_zones(args):
+    ip = get_ip(args)
+    print_zones(ip)
+
+
+def cmd_status(args):
+    ip = get_ip(args)
+    data = query_system(ip)
+    print_system(ip, data)
+    print()
+    print_zones(ip, data)
+
+
+def cmd_airquality(args):
+    ip = get_ip(args)
+    data = query_system(ip)
+    s = data["SystemV2"]
+    if s.get("InRh"):
+        print(f"Humidity:  {s['InRh']}%")
+    if s.get("IneCO2"):
+        print(f"eCO2:      {s['IneCO2']} ppm")
+    if s.get("InTVOC"):
+        print(f"TVOC:      {s['InTVOC']} ppb")
+    if not any(s.get(k) for k in ("InRh", "IneCO2", "InTVOC")):
+        print("No air quality sensors detected.")
+
+
+def cmd_sleep(args):
+    ip = get_ip(args)
+    minutes = int(args.minutes)
+    if minutes < 0:
+        print("Minutes must be 0 or greater.", file=sys.stderr)
+        sys.exit(1)
+    result = send_command(ip, {"SysSleepTimer": minutes})
+    if minutes == 0:
+        print(f"Sleep timer cleared ({result})")
+    else:
+        print(f"Sleep timer set to {minutes} min ({result})")
 
 
 def cmd_on(args):
@@ -250,7 +307,8 @@ def cmd_zone(args):
 
     if not any([args.zone_mode, args.zone_temp is not None, args.max_air is not None, args.min_air is not None]):
         # Just show zone info
-        z = query_zone(ip, index).get("ZonesV2", query_zone(ip, index))
+        zdata = query_zone(ip, index)
+        z = zdata.get("ZonesV2", zdata)
         zmode = ZONE_MODES_REV.get(z["Mode"], str(z["Mode"]))
         print(f"Zone {index}: {z['Name']}")
         print(f"  Temp:     {fmt_temp(z['Temp'])}")
@@ -279,14 +337,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
   izone status                    Show system and zone status
+  izone system                    Show system info only
+  izone zones                     List all zones
   izone on                        Turn system on
   izone off                       Turn system off
   izone mode cool                 Set to cool mode
   izone fan auto                  Set fan to auto
   izone temp 22                   Set system temperature to 22C
+  izone sleep 60                  Set sleep timer to 60 minutes
+  izone sleep 0                   Clear sleep timer
+  izone zone 2                    Show zone 2 details
   izone zone 2 --mode auto        Set zone 2 to auto mode
   izone zone 2 --temp 23          Set zone 2 temperature to 23C
   izone zone 5 --max-air 80       Set zone 5 max airflow to 80%
+  izone airquality                Show air quality readings
   izone json                      Output full status as JSON
   izone discover                  Find iZone bridges on network
 """,
@@ -297,8 +361,14 @@ def main():
 
     sub.add_parser("discover", help="Find iZone bridges on the network")
     sub.add_parser("status", help="Show system and zone status")
+    sub.add_parser("system", help="Show system info only (no zones)")
+    sub.add_parser("zones", help="List all zones")
+    sub.add_parser("airquality", help="Show indoor air quality readings")
     sub.add_parser("on", help="Turn system on")
     sub.add_parser("off", help="Turn system off")
+
+    sleep_p = sub.add_parser("sleep", help="Set sleep timer (0 to clear)")
+    sleep_p.add_argument("minutes", type=int, help="Minutes until auto-off (0 to clear)")
 
     mode_p = sub.add_parser("mode", help="Set operating mode")
     mode_p.add_argument("mode", choices=list(MODES.keys()))
@@ -329,6 +399,10 @@ def main():
     commands = {
         "discover": cmd_discover,
         "status": cmd_status,
+        "system": cmd_system,
+        "zones": cmd_zones,
+        "airquality": cmd_airquality,
+        "sleep": cmd_sleep,
         "on": cmd_on,
         "off": cmd_off,
         "mode": cmd_mode,

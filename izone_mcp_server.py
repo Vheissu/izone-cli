@@ -80,19 +80,29 @@ def _post(endpoint: str, payload: dict) -> str:
     return raw
 
 
+def _json_request(endpoint: str, payload: dict, retries: int = 3, retry_delay: float = 0.3) -> dict:
+    """POST JSON request and retry when bridge returns transient malformed payloads."""
+    last_raw = ""
+    for attempt in range(retries):
+        raw = _post(endpoint, payload)
+        last_raw = raw
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            if attempt < retries - 1:
+                time.sleep(retry_delay)
+                continue
+            snippet = raw if len(raw) <= 120 else raw[:117] + "..."
+            raise RuntimeError(f"Bridge returned non-JSON response: {snippet!r}")
+    raise RuntimeError(f"Bridge returned non-JSON response: {last_raw!r}")
+
+
 def _query_system() -> dict:
-    raw = _post("/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}})
-    return json.loads(raw)
+    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}}, retries=4)
 
 
 def _query_zone(index: int) -> dict:
-    raw = _post("/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}})
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        time.sleep(0.3)
-        raw = _post("/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}})
-        return json.loads(raw)
+    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}}, retries=3)
 
 
 def _send_command(payload: dict) -> str:
@@ -487,13 +497,7 @@ NUM_SCHEDULE_SLOTS = 9
 
 
 def _query_schedule(index: int) -> dict:
-    raw = _post("/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        time.sleep(0.3)
-        raw = _post("/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
-        return json.loads(raw)
+    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}}, retries=3)
 
 
 def _fmt_sched_time(h, m):

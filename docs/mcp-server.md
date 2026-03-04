@@ -81,6 +81,26 @@ Modify a schedule's settings. Only pass the parameters you want to change.
 Runs a schedule immediately as a scene/favourite without enabling its timer.
 - `slot`: Schedule index (0–8)
 
+### `izone_profiles`
+Lists all saved profiles with a summary of each: mode, fan, temperature, and zone count.
+
+### `izone_save_profile`
+Saves the current live AC settings as a named profile.
+- `name`: Profile name (e.g., `"summer-day"`, `"bedtime"`)
+
+### `izone_apply_profile`
+Applies a saved profile. Turns on the AC and sets mode, fan, temperature, and per-zone configurations. Zones not in the profile are closed by default.
+- `name`: Profile name to apply
+
+### `izone_create_profile`
+Creates or updates a profile from parameters without changing the AC. Useful for defining optimal settings to apply later.
+- `name`: Profile name
+- `mode`: AC mode (default: `"cool"`)
+- `fan`: Fan speed (default: `"auto"`)
+- `temperature`: System setpoint, 15.0–30.0 (default: 23.0)
+- `zones`: Zone configs as `"index:temp,index:temp"` (e.g., `"2:22,5:23"`) — listed zones are set to auto mode (optional)
+- `close_others`: Close zones not listed (default: true)
+
 ## Zone Discovery
 
 Zone indexes and names are specific to your iZone installation. Use `izone_status` (or `izone status` from the CLI) to see your available zones. The MCP server dynamically queries zone count and names from your bridge.

@@ -58,6 +58,14 @@ izone defaults save                   # Snapshot current settings
 izone defaults show                   # View saved defaults
 izone defaults restore                # Restore saved defaults
 
+# Profiles (named presets for optimal settings)
+izone profiles                        # List all profiles
+izone profile save bedtime            # Save current settings as "bedtime"
+izone profile apply bedtime           # Apply "bedtime" profile
+izone profile set cool-night --mode cool --fan low --temp 23 --zones "2:22,5:23"
+izone profile show cool-night         # View profile details
+izone profile delete old-one          # Delete a profile
+
 # Schedules / scenes
 izone schedules                       # List all schedules
 izone schedule 2                      # View schedule details
@@ -113,6 +121,10 @@ Restart your MCP client after adding the configuration.
 | `izone_temperature` | Set system target temperature |
 | `izone_zone_control` | Control individual zones (mode, temp, airflow) |
 | `izone_comfort_setup` | Quick setup: power on, set mode/fan/temp, open specific zones |
+| `izone_profiles` | List all saved profiles |
+| `izone_apply_profile` | Apply a named profile (mode, fan, temp, zones) |
+| `izone_save_profile` | Save current settings as a named profile |
+| `izone_create_profile` | Define a profile from parameters without changing the AC |
 
 ### Example Prompts
 

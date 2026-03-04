@@ -18,7 +18,12 @@ Always check current status before making changes. Be energy-conscious.
 IMPORTANT: When making temporary changes (bedtime mode, working from home, etc.), ALWAYS call
 izone_defaults_save first to snapshot the current settings, then make your changes. This lets the
 user restore their normal settings later with izone_defaults_restore. Only skip saving if the user
-explicitly says they want permanent changes.""")
+explicitly says they want permanent changes.
+
+PROFILES: The user can define named profiles (e.g., "summer-day", "bedtime") that bundle mode, fan,
+temp, and per-zone settings. Use izone_profiles to list them, izone_apply_profile to apply one,
+izone_save_profile to capture current settings as a profile, or izone_create_profile to define one
+from parameters. When the user asks to set up or save their preferred settings, suggest profiles.""")
 
 # --- iZone protocol constants ---
 DISCOVERY_PORT = 12107
@@ -572,6 +577,179 @@ def izone_run_schedule(slot: int) -> str:
         return f"Error: slot must be 0-{NUM_SCHEDULE_SLOTS - 1}"
     result = _send_command({"FavouriteSet": slot + 1})
     return f"Schedule {slot} activated ({result})"
+
+
+PROFILES_FILE = os.path.expanduser("~/.config/izone/profiles.json")
+
+
+def _load_profiles() -> dict:
+    if os.path.exists(PROFILES_FILE):
+        with open(PROFILES_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def _save_profiles(profiles: dict):
+    os.makedirs(os.path.dirname(PROFILES_FILE), exist_ok=True)
+    with open(PROFILES_FILE, "w") as f:
+        json.dump(profiles, f, indent=2)
+
+
+@mcp.tool()
+def izone_profiles() -> str:
+    """List all saved AC profiles with their settings summary."""
+    profiles = _load_profiles()
+    if not profiles:
+        return "No profiles saved. Use izone_save_profile to create one from current settings, or izone_create_profile to define one manually."
+    lines = [f"{'Name':<20} {'Mode':<8} {'Fan':<8} {'Temp':>6} {'Zones':>6}", "-" * 52]
+    for name, p in sorted(profiles.items()):
+        mode = p.get("mode", "?")
+        fan = p.get("fan", "?")
+        temp = _fmt_temp(p.get("temp", 0))
+        zone_count = len(p.get("zones", {}))
+        lines.append(f"{name:<20} {mode:<8} {fan:<8} {temp:>5}C {zone_count:>5}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def izone_save_profile(name: str) -> str:
+    """Save the current live AC settings as a named profile. Use this to capture the current
+    state so it can be re-applied later with izone_apply_profile.
+
+    Args:
+        name: Profile name (e.g., "summer-day", "bedtime", "working-from-home")
+    """
+    data = _query_system()
+    s = data["SystemV2"]
+    num_zones = s["NoOfZones"]
+
+    profile = {
+        "mode": MODES_REV.get(s["SysMode"], str(s["SysMode"])),
+        "fan": FAN_REV.get(s["SysFan"], str(s["SysFan"])),
+        "temp": s["Setpoint"],
+        "close_others": True,
+        "zones": {},
+    }
+    for i in range(num_zones):
+        zdata = _query_zone(i)
+        z = zdata.get("ZonesV2", zdata)
+        profile["zones"][str(i)] = {
+            "mode": z["Mode"],
+            "temp": z["Setpoint"],
+        }
+
+    profiles = _load_profiles()
+    profiles[name] = profile
+    _save_profiles(profiles)
+    return f"Profile '{name}' saved (mode={profile['mode']}, fan={profile['fan']}, temp={_fmt_temp(profile['temp'])}C, {len(profile['zones'])} zones)"
+
+
+@mcp.tool()
+def izone_apply_profile(name: str) -> str:
+    """Apply a saved profile. Turns on the AC and sets mode, fan, temperature, and zone
+    configurations. Zones not listed in the profile are closed (unless close_others is false).
+
+    Args:
+        name: Profile name to apply
+    """
+    profiles = _load_profiles()
+    if name not in profiles:
+        available = ", ".join(sorted(profiles.keys())) if profiles else "none"
+        return f"Profile '{name}' not found. Available profiles: {available}"
+
+    profile = profiles[name]
+    results = []
+
+    # Turn on
+    r = _send_command({"SysOn": 1})
+    results.append(f"System ON ({r})")
+    time.sleep(0.2)
+
+    if "mode" in profile:
+        r = _send_command({"SysMode": profile["mode"]})
+        results.append(f"Mode: {profile['mode']} ({r})")
+        time.sleep(0.2)
+
+    if "fan" in profile:
+        r = _send_command({"SysFan": profile["fan"]})
+        results.append(f"Fan: {profile['fan']} ({r})")
+        time.sleep(0.2)
+
+    if "temp" in profile:
+        r = _send_command({"SysSetpoint": profile["temp"]})
+        results.append(f"Temp: {_fmt_temp(profile['temp'])}C ({r})")
+        time.sleep(0.2)
+
+    # Configure zones
+    sys_data = _query_system()
+    num_zones = sys_data["SystemV2"]["NoOfZones"]
+    zone_configs = profile.get("zones", {})
+
+    for i in range(num_zones):
+        si = str(i)
+        if si in zone_configs:
+            zconf = zone_configs[si]
+            _send_command({"ZoneMode": {"Index": i, "Mode": zconf["mode"]}})
+            _send_command({"ZoneSetpoint": {"Index": i, "Setpoint": zconf["temp"]}})
+            zmode = ZONE_MODES_REV.get(zconf["mode"], str(zconf["mode"]))
+            results.append(f"Zone {i}: {zmode} at {_fmt_temp(zconf['temp'])}C")
+        elif profile.get("close_others", True):
+            _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES["close"]}})
+            results.append(f"Zone {i}: closed")
+        time.sleep(0.2)
+
+    return f"Profile '{name}' applied:\n" + "\n".join(results)
+
+
+@mcp.tool()
+def izone_create_profile(name: str, mode: str = "cool", fan: str = "auto", temperature: float = 23.0, zones: str = "", close_others: bool = True) -> str:
+    """Create or update a named profile from parameters WITHOUT changing the AC.
+    Use this to define a profile manually, then apply it later with izone_apply_profile.
+
+    Args:
+        name: Profile name (e.g., "summer-day", "bedtime")
+        mode: AC mode - "cool", "heat", "vent", "dry", "auto"
+        fan: Fan speed - "low", "medium", "high", "auto", "top"
+        temperature: System setpoint in Celsius (15.0-30.0)
+        zones: Zone configs as "index:temp,index:temp" (e.g., "2:22,5:23"). Zones listed are set to auto mode at the given temp. Leave empty to include all zones at the system temp.
+        close_others: If true, zones not listed are closed when applied (default: true)
+    """
+    if mode.lower() not in MODES:
+        return f"Error: mode must be one of: {', '.join(MODES.keys())}"
+    if fan.lower() not in FAN_SPEEDS:
+        return f"Error: fan must be one of: {', '.join(FAN_SPEEDS.keys())}"
+    if temperature < 15 or temperature > 30:
+        return "Error: temperature must be between 15.0 and 30.0"
+
+    sys_temp = int(temperature * 100)
+    profile = {
+        "mode": mode.lower(),
+        "fan": fan.lower(),
+        "temp": sys_temp,
+        "close_others": close_others,
+        "zones": {},
+    }
+
+    if zones:
+        for pair in zones.split(","):
+            pair = pair.strip()
+            if ":" in pair:
+                idx, temp = pair.split(":", 1)
+                temp_val = float(temp)
+                if temp_val < 15 or temp_val > 30:
+                    return f"Error: zone temperature must be between 15.0 and 30.0 (got {temp_val})"
+                setpoint = round(int(temp_val * 100) / 50) * 50
+                profile["zones"][idx.strip()] = {"mode": ZONE_MODES["auto"], "temp": setpoint}
+            else:
+                profile["zones"][pair.strip()] = {"mode": ZONE_MODES["auto"], "temp": sys_temp}
+
+    profiles = _load_profiles()
+    profiles[name] = profile
+    _save_profiles(profiles)
+
+    zone_count = len(profile["zones"])
+    zone_desc = f", {zone_count} zones" if zone_count else ", all zones at system temp"
+    return f"Profile '{name}' created (mode={mode}, fan={fan}, temp={temperature}C{zone_desc})"
 
 
 if __name__ == "__main__":

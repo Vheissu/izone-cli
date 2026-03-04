@@ -105,6 +105,70 @@ def send_command(ip, payload):
     return raw
 
 
+def mode_to_value(mode):
+    """Normalize mode input (name or number) to protocol integer."""
+    if isinstance(mode, str):
+        key = mode.strip().lower()
+        if key in MODES:
+            return MODES[key]
+        if key.isdigit():
+            mode = int(key)
+        else:
+            raise ValueError(f"Invalid mode: {mode}")
+    if isinstance(mode, (int, float)):
+        mode = int(mode)
+        if mode in MODES_REV:
+            return mode
+    raise ValueError(f"Invalid mode: {mode}")
+
+
+def fan_to_value(fan):
+    """Normalize fan input (name or number) to protocol integer."""
+    if isinstance(fan, str):
+        key = fan.strip().lower()
+        if key in FAN_SPEEDS:
+            return FAN_SPEEDS[key]
+        if key.isdigit():
+            fan = int(key)
+        else:
+            raise ValueError(f"Invalid fan speed: {fan}")
+    if isinstance(fan, (int, float)):
+        fan = int(fan)
+        if fan in FAN_REV:
+            return fan
+    raise ValueError(f"Invalid fan speed: {fan}")
+
+
+def mode_label(mode):
+    """Return a user-friendly mode label for either enum value or text."""
+    if isinstance(mode, str):
+        key = mode.strip().lower()
+        if key in MODES:
+            return key
+        if key.isdigit():
+            mode = int(key)
+        else:
+            return mode
+    if isinstance(mode, (int, float)):
+        return MODES_REV.get(int(mode), str(mode))
+    return str(mode)
+
+
+def fan_label(fan):
+    """Return a user-friendly fan label for either enum value or text."""
+    if isinstance(fan, str):
+        key = fan.strip().lower()
+        if key in FAN_SPEEDS:
+            return key
+        if key.isdigit():
+            fan = int(key)
+        else:
+            return fan
+    if isinstance(fan, (int, float)):
+        return FAN_REV.get(int(fan), str(fan))
+    return str(fan)
+
+
 def get_ip(args):
     """Get bridge IP from args, cache, or discovery."""
     if args.ip:
@@ -158,8 +222,8 @@ def print_system(ip, data=None):
         data = query_system(ip)
     s = data["SystemV2"]
     on_off = "ON" if s["SysOn"] else "OFF"
-    mode = MODES_REV.get(s["SysMode"], str(s["SysMode"]))
-    fan = FAN_REV.get(s["SysFan"], str(s["SysFan"]))
+    mode = mode_label(s["SysMode"])
+    fan = fan_label(s["SysFan"])
 
     print(f"System:      {on_off}")
     print(f"Mode:        {mode}")
@@ -294,7 +358,7 @@ def cmd_mode(args):
     if mode_val not in MODES:
         print(f"Invalid mode. Choose from: {', '.join(MODES.keys())}", file=sys.stderr)
         sys.exit(1)
-    result = send_command(ip, {"SysMode": mode_val})
+    result = send_command(ip, {"SysMode": MODES[mode_val]})
     print(f"Mode set to {mode_val} ({result})")
 
 
@@ -304,7 +368,7 @@ def cmd_fan(args):
     if fan_val not in FAN_SPEEDS:
         print(f"Invalid fan speed. Choose from: {', '.join(FAN_SPEEDS.keys())}", file=sys.stderr)
         sys.exit(1)
-    result = send_command(ip, {"SysFan": fan_val})
+    result = send_command(ip, {"SysFan": FAN_SPEEDS[fan_val]})
     print(f"Fan set to {fan_val} ({result})")
 
 
@@ -425,9 +489,16 @@ def cmd_defaults_restore(args):
     ip = get_ip(args)
     import time
 
-    send_command(ip, {"SysMode": defaults["mode"]})
+    try:
+        mode_value = mode_to_value(defaults["mode"])
+        fan_value = fan_to_value(defaults["fan"])
+    except ValueError as e:
+        print(f"Saved defaults are invalid: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    send_command(ip, {"SysMode": mode_value})
     time.sleep(0.2)
-    send_command(ip, {"SysFan": defaults["fan"]})
+    send_command(ip, {"SysFan": fan_value})
     time.sleep(0.2)
     send_command(ip, {"SysSetpoint": defaults["setpoint"]})
 
@@ -438,8 +509,8 @@ def cmd_defaults_restore(args):
         send_command(ip, {"ZoneMaxAir": {"Index": z["index"], "MaxAir": z["max_air"]}})
         send_command(ip, {"ZoneMinAir": {"Index": z["index"], "MinAir": z["min_air"]}})
 
-    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
-    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    mode = mode_label(defaults["mode"])
+    fan = fan_label(defaults["fan"])
     print(f"Defaults restored: mode={mode}, fan={fan}, temp={fmt_temp(defaults['setpoint'])}")
     print(f"  {len(defaults['zones'])} zones restored")
 
@@ -454,8 +525,8 @@ def cmd_defaults_show(args):
     with open(path) as f:
         defaults = json.load(f)
 
-    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
-    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    mode = mode_label(defaults["mode"])
+    fan = fan_label(defaults["fan"])
     print(f"Saved defaults ({path}):")
     print(f"  Mode:     {mode}")
     print(f"  Fan:      {fan}")
@@ -593,12 +664,22 @@ def cmd_profile_apply(args):
 
     # Set mode
     if "mode" in profile:
-        send_command(ip, {"SysMode": profile["mode"]})
+        try:
+            mode_value = mode_to_value(profile["mode"])
+        except ValueError as e:
+            print(f"Profile '{name}' has invalid mode value: {e}", file=sys.stderr)
+            sys.exit(1)
+        send_command(ip, {"SysMode": mode_value})
         _time.sleep(0.2)
 
     # Set fan
     if "fan" in profile:
-        send_command(ip, {"SysFan": profile["fan"]})
+        try:
+            fan_value = fan_to_value(profile["fan"])
+        except ValueError as e:
+            print(f"Profile '{name}' has invalid fan value: {e}", file=sys.stderr)
+            sys.exit(1)
+        send_command(ip, {"SysFan": fan_value})
         _time.sleep(0.2)
 
     # Set system temp
@@ -621,8 +702,8 @@ def cmd_profile_apply(args):
             send_command(ip, {"ZoneMode": {"Index": i, "Mode": ZONE_MODES["close"]}})
         _time.sleep(0.2)
 
-    mode = profile.get("mode", "?")
-    fan = profile.get("fan", "?")
+    mode = mode_label(profile.get("mode", "?"))
+    fan = fan_label(profile.get("fan", "?"))
     print(f"Profile '{name}' applied (mode={mode}, fan={fan}, temp={fmt_temp(profile.get('temp', 0))})")
 
 
@@ -808,7 +889,7 @@ def cmd_schedule(args):
         if fan_val not in FAN_SPEEDS:
             print(f"Invalid fan speed. Choose from: {', '.join(FAN_SPEEDS.keys())}", file=sys.stderr)
             sys.exit(1)
-        send_command(ip, {"SchedAcFan": {"Index": index, "Fan": fan_val}})
+        send_command(ip, {"SchedAcFan": {"Index": index, "Fan": FAN_SPEEDS[fan_val]}})
         print(f"Schedule {index} fan set to {fan_val}")
         changed = True
 

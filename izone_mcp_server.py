@@ -99,6 +99,68 @@ def _send_command(payload: dict) -> str:
     return _post("/iZoneCommandV2", payload)
 
 
+def _mode_to_value(mode) -> int:
+    """Normalize mode input (name or number) to protocol integer."""
+    if isinstance(mode, str):
+        key = mode.strip().lower()
+        if key in MODES:
+            return MODES[key]
+        if key.isdigit():
+            mode = int(key)
+        else:
+            raise ValueError(f"Invalid mode: {mode}")
+    if isinstance(mode, (int, float)):
+        mode = int(mode)
+        if mode in MODES_REV:
+            return mode
+    raise ValueError(f"Invalid mode: {mode}")
+
+
+def _fan_to_value(fan) -> int:
+    """Normalize fan input (name or number) to protocol integer."""
+    if isinstance(fan, str):
+        key = fan.strip().lower()
+        if key in FAN_SPEEDS:
+            return FAN_SPEEDS[key]
+        if key.isdigit():
+            fan = int(key)
+        else:
+            raise ValueError(f"Invalid fan speed: {fan}")
+    if isinstance(fan, (int, float)):
+        fan = int(fan)
+        if fan in FAN_REV:
+            return fan
+    raise ValueError(f"Invalid fan speed: {fan}")
+
+
+def _mode_label(mode) -> str:
+    if isinstance(mode, str):
+        key = mode.strip().lower()
+        if key in MODES:
+            return key
+        if key.isdigit():
+            mode = int(key)
+        else:
+            return mode
+    if isinstance(mode, (int, float)):
+        return MODES_REV.get(int(mode), str(mode))
+    return str(mode)
+
+
+def _fan_label(fan) -> str:
+    if isinstance(fan, str):
+        key = fan.strip().lower()
+        if key in FAN_SPEEDS:
+            return key
+        if key.isdigit():
+            fan = int(key)
+        else:
+            return fan
+    if isinstance(fan, (int, float)):
+        return FAN_REV.get(int(fan), str(fan))
+    return str(fan)
+
+
 def _fmt_temp(val) -> str:
     if isinstance(val, (int, float)):
         return f"{val / 100:.1f}"
@@ -114,8 +176,8 @@ def izone_status() -> str:
     data = _query_system()
     s = data["SystemV2"]
     on_off = "ON" if s["SysOn"] else "OFF"
-    mode = MODES_REV.get(s["SysMode"], str(s["SysMode"]))
-    fan = FAN_REV.get(s["SysFan"], str(s["SysFan"]))
+    mode = _mode_label(s["SysMode"])
+    fan = _fan_label(s["SysFan"])
 
     lines = [
         f"System: {on_off}",
@@ -170,7 +232,7 @@ def izone_mode(mode: str) -> str:
     mode = mode.lower()
     if mode not in MODES:
         return f"Error: mode must be one of: {', '.join(MODES.keys())}"
-    result = _send_command({"SysMode": mode})
+    result = _send_command({"SysMode": MODES[mode]})
     return f"Mode set to {mode} ({result})"
 
 
@@ -184,7 +246,7 @@ def izone_fan(speed: str) -> str:
     speed = speed.lower()
     if speed not in FAN_SPEEDS:
         return f"Error: speed must be one of: {', '.join(FAN_SPEEDS.keys())}"
-    result = _send_command({"SysFan": speed})
+    result = _send_command({"SysFan": FAN_SPEEDS[speed]})
     return f"Fan set to {speed} ({result})"
 
 
@@ -314,12 +376,18 @@ def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan:
     time.sleep(0.3)
 
     # Set mode
-    r = _send_command({"SysMode": mode.lower()})
+    mode_key = mode.lower()
+    if mode_key not in MODES:
+        return f"Error: mode must be one of: {', '.join(MODES.keys())}"
+    r = _send_command({"SysMode": MODES[mode_key]})
     results.append(f"Mode: {mode} ({r})")
     time.sleep(0.3)
 
     # Set fan
-    r = _send_command({"SysFan": fan.lower()})
+    fan_key = fan.lower()
+    if fan_key not in FAN_SPEEDS:
+        return f"Error: fan must be one of: {', '.join(FAN_SPEEDS.keys())}"
+    r = _send_command({"SysFan": FAN_SPEEDS[fan_key]})
     results.append(f"Fan: {fan} ({r})")
     time.sleep(0.3)
 
@@ -393,9 +461,15 @@ def izone_defaults_restore() -> str:
         return "No saved defaults found. Save defaults first with izone_defaults_save."
     with open(DEFAULTS_FILE) as f:
         defaults = json.load(f)
-    _send_command({"SysMode": defaults["mode"]})
+    try:
+        mode_value = _mode_to_value(defaults["mode"])
+        fan_value = _fan_to_value(defaults["fan"])
+    except ValueError as e:
+        return f"Error: saved defaults are invalid: {e}"
+
+    _send_command({"SysMode": mode_value})
     time.sleep(0.2)
-    _send_command({"SysFan": defaults["fan"]})
+    _send_command({"SysFan": fan_value})
     time.sleep(0.2)
     _send_command({"SysSetpoint": defaults["setpoint"]})
     for z in defaults["zones"]:
@@ -404,8 +478,8 @@ def izone_defaults_restore() -> str:
         _send_command({"ZoneSetpoint": {"Index": z["index"], "Setpoint": z["setpoint"]}})
         _send_command({"ZoneMaxAir": {"Index": z["index"], "MaxAir": z["max_air"]}})
         _send_command({"ZoneMinAir": {"Index": z["index"], "MinAir": z["min_air"]}})
-    mode = MODES_REV.get(defaults["mode"], str(defaults["mode"]))
-    fan = FAN_REV.get(defaults["fan"], str(defaults["fan"]))
+    mode = _mode_label(defaults["mode"])
+    fan = _fan_label(defaults["fan"])
     return f"Defaults restored: mode={mode}, fan={fan}, temp={_fmt_temp(defaults['setpoint'])}C, {len(defaults['zones'])} zones"
 
 
@@ -518,7 +592,7 @@ def izone_schedule_edit(slot: int, name: str = "", mode: str = "", fan: str = ""
     if fan:
         if fan.lower() not in FAN_SPEEDS:
             return f"Error: fan must be one of: {', '.join(FAN_SPEEDS.keys())}"
-        _send_command({"SchedAcFan": {"Index": slot, "Fan": fan.lower()}})
+        _send_command({"SchedAcFan": {"Index": slot, "Fan": FAN_SPEEDS[fan.lower()]}})
         results.append(f"Fan set to {fan}")
     if start or stop or days:
         settings = {"Index": slot}
@@ -666,13 +740,21 @@ def izone_apply_profile(name: str) -> str:
     time.sleep(0.2)
 
     if "mode" in profile:
-        r = _send_command({"SysMode": profile["mode"]})
-        results.append(f"Mode: {profile['mode']} ({r})")
+        try:
+            mode_value = _mode_to_value(profile["mode"])
+        except ValueError as e:
+            return f"Error: profile '{name}' has invalid mode value: {e}"
+        r = _send_command({"SysMode": mode_value})
+        results.append(f"Mode: {_mode_label(profile['mode'])} ({r})")
         time.sleep(0.2)
 
     if "fan" in profile:
-        r = _send_command({"SysFan": profile["fan"]})
-        results.append(f"Fan: {profile['fan']} ({r})")
+        try:
+            fan_value = _fan_to_value(profile["fan"])
+        except ValueError as e:
+            return f"Error: profile '{name}' has invalid fan value: {e}"
+        r = _send_command({"SysFan": fan_value})
+        results.append(f"Fan: {_fan_label(profile['fan'])} ({r})")
         time.sleep(0.2)
 
     if "temp" in profile:

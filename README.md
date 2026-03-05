@@ -138,6 +138,20 @@ Restart your MCP client after adding the configuration.
 
 The CLI auto-discovers your iZone bridge via UDP broadcast and caches the IP at `~/.config/izone/bridge_ip` for one hour. Use `--ip` to skip discovery and target a bridge directly.
 
+## Reliability Defaults
+
+Both the CLI and MCP server now protect the bridge from burst traffic:
+
+- HTTP requests are serialized and paced with a minimum 250 ms gap.
+- Transient transport failures (timeouts/socket errors) are retried automatically.
+- Transient bridge responses like `{ERROR}`/`{BUSY}` are retried automatically.
+
+Optional environment variables:
+
+- `IZONE_HTTP_MIN_GAP` (default `0.25`) - minimum seconds between HTTP requests
+- `IZONE_HTTP_RETRIES` (default `4`) - max attempts for one request/command
+- `IZONE_HTTP_RETRY_DELAY` (default `0.25`) - base backoff between retries
+
 ## Docs
 
 - [Architecture](docs/architecture.md) — system design and request flows

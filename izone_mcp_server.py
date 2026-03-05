@@ -5,6 +5,7 @@ import http.client
 import json
 import os
 import socket
+import threading
 import time
 
 from mcp.server.fastmcp import FastMCP
@@ -29,6 +30,11 @@ from parameters. When the user asks to set up or save their preferred settings, 
 DISCOVERY_PORT = 12107
 BRIDGE_IP_CACHE = os.path.expanduser("~/.config/izone/bridge_ip")
 HTTP_TIMEOUT = 5
+HTTP_RETRIES = int(os.getenv("IZONE_HTTP_RETRIES", "4"))
+HTTP_RETRY_DELAY = float(os.getenv("IZONE_HTTP_RETRY_DELAY", "0.25"))
+HTTP_MIN_GAP = float(os.getenv("IZONE_HTTP_MIN_GAP", "0.25"))
+TRANSIENT_RESPONSES = {"{ERROR}", "ERROR", "{BUSY}", "BUSY"}
+REQUEST_ERRORS = (socket.timeout, TimeoutError, OSError, http.client.HTTPException)
 
 MODES = {"cool": 1, "heat": 2, "vent": 3, "dry": 4, "auto": 5}
 MODES_REV = {v: k for k, v in MODES.items()}
@@ -36,6 +42,25 @@ FAN_SPEEDS = {"low": 1, "medium": 2, "high": 3, "auto": 4, "top": 5}
 FAN_REV = {v: k for k, v in FAN_SPEEDS.items()}
 ZONE_MODES = {"open": 1, "close": 2, "auto": 3, "override": 4, "constant": 5}
 ZONE_MODES_REV = {v: k for k, v in ZONE_MODES.items()}
+_request_lock = threading.Lock()
+_last_request_started = 0.0
+
+
+def _retry_delay(attempt: int) -> float:
+    return HTTP_RETRY_DELAY * (attempt + 1)
+
+
+def _normalize_response(raw: str) -> str:
+    return raw.strip().upper()
+
+
+def _pace_requests():
+    global _last_request_started
+    now = time.monotonic()
+    wait_for = HTTP_MIN_GAP - (now - _last_request_started)
+    if wait_for > 0:
+        time.sleep(wait_for)
+    _last_request_started = time.monotonic()
 
 
 def _get_bridge_ip() -> str:
@@ -69,44 +94,85 @@ def _get_bridge_ip() -> str:
 
 def _post(endpoint: str, payload: dict) -> str:
     ip = _get_bridge_ip()
-    conn = http.client.HTTPConnection(ip, 80, timeout=HTTP_TIMEOUT)
     body = json.dumps(payload)
-    conn.request("POST", endpoint, body=body, headers={"Content-Type": "application/json"})
-    resp = conn.getresponse()
-    raw = resp.read().decode("utf-8", errors="replace").strip()
-    conn.close()
+    with _request_lock:
+        _pace_requests()
+        conn = http.client.HTTPConnection(ip, 80, timeout=HTTP_TIMEOUT)
+        try:
+            conn.request("POST", endpoint, body=body, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", errors="replace").strip()
+        finally:
+            conn.close()
     if raw.endswith("{OK}"):
         raw = raw[:-4]
     return raw
 
 
-def _json_request(endpoint: str, payload: dict, retries: int = 3, retry_delay: float = 0.3) -> dict:
-    """POST JSON request and retry when bridge returns transient malformed payloads."""
+def _json_request(endpoint: str, payload: dict, retries: int = HTTP_RETRIES) -> dict:
+    """POST JSON request and retry transient transport or bridge-side errors."""
+    attempts = max(1, int(retries))
     last_raw = ""
-    for attempt in range(retries):
-        raw = _post(endpoint, payload)
+    last_error = None
+
+    for attempt in range(attempts):
+        try:
+            raw = _post(endpoint, payload)
+        except REQUEST_ERRORS as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(_retry_delay(attempt))
+                continue
+            raise
+
         last_raw = raw
+        if _normalize_response(raw) in TRANSIENT_RESPONSES and attempt < attempts - 1:
+            time.sleep(_retry_delay(attempt))
+            continue
+
         try:
             return json.loads(raw)
-        except json.JSONDecodeError:
-            if attempt < retries - 1:
-                time.sleep(retry_delay)
+        except json.JSONDecodeError as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(_retry_delay(attempt))
                 continue
             snippet = raw if len(raw) <= 120 else raw[:117] + "..."
-            raise RuntimeError(f"Bridge returned non-JSON response: {snippet!r}")
-    raise RuntimeError(f"Bridge returned non-JSON response: {last_raw!r}")
+            raise RuntimeError(f"Bridge returned non-JSON response: {snippet!r}") from e
+
+    snippet = last_raw if len(last_raw) <= 120 else last_raw[:117] + "..."
+    raise RuntimeError(f"Bridge returned non-JSON response: {snippet!r}") from last_error
 
 
 def _query_system() -> dict:
-    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}}, retries=4)
+    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}}, retries=max(4, HTTP_RETRIES))
 
 
 def _query_zone(index: int) -> dict:
-    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}}, retries=3)
+    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}}, retries=max(3, HTTP_RETRIES))
 
 
-def _send_command(payload: dict) -> str:
-    return _post("/iZoneCommandV2", payload)
+def _send_command(payload: dict, retries: int = HTTP_RETRIES) -> str:
+    attempts = max(1, int(retries))
+    last_raw = ""
+    for attempt in range(attempts):
+        try:
+            raw = _post("/iZoneCommandV2", payload)
+        except REQUEST_ERRORS:
+            if attempt < attempts - 1:
+                time.sleep(_retry_delay(attempt))
+                continue
+            raise
+
+        last_raw = raw
+        normalized = _normalize_response(raw)
+        if normalized in ("", "OK"):
+            return raw
+        if normalized in TRANSIENT_RESPONSES and attempt < attempts - 1:
+            time.sleep(_retry_delay(attempt))
+            continue
+        return raw
+    return last_raw
 
 
 def _mode_to_value(mode) -> int:
@@ -497,7 +563,7 @@ NUM_SCHEDULE_SLOTS = 9
 
 
 def _query_schedule(index: int) -> dict:
-    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}}, retries=3)
+    return _json_request("/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}}, retries=max(3, HTTP_RETRIES))
 
 
 def _fmt_sched_time(h, m):

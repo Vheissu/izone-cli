@@ -105,6 +105,20 @@ Creates or updates a profile from parameters without changing the AC. Useful for
 
 Zone indexes and names are specific to your iZone installation. Use `izone_status` (or `izone status` from the CLI) to see your available zones. The MCP server dynamically queries zone count and names from your bridge.
 
+## Reliability and Rate Limiting
+
+The MCP server serializes HTTP calls to the bridge and inserts a small delay between requests to avoid overloading the controller during multi-step operations.
+
+- Default minimum gap between HTTP requests: `0.25s`
+- Default retries per request/command: `4`
+- Automatic retries for transient transport failures and bridge replies like `{ERROR}`/`{BUSY}`
+
+You can tune this with environment variables on the MCP server process:
+
+- `IZONE_HTTP_MIN_GAP`
+- `IZONE_HTTP_RETRIES`
+- `IZONE_HTTP_RETRY_DELAY`
+
 ## Configuration
 
 ### Claude Code

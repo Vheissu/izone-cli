@@ -2,15 +2,24 @@
 """iZone CLI - Control your iZone air conditioning from the terminal."""
 
 import argparse
+import http.client
 import json
+import os
 import socket
 import sys
+import threading
+import time
 import urllib.request
 
 DISCOVERY_PORT = 12107
 DISCOVERY_MSG = b"IASD"
 DISCOVERY_TIMEOUT = 3
 HTTP_TIMEOUT = 5
+HTTP_RETRIES = int(os.getenv("IZONE_HTTP_RETRIES", "4"))
+HTTP_RETRY_DELAY = float(os.getenv("IZONE_HTTP_RETRY_DELAY", "0.25"))
+HTTP_MIN_GAP = float(os.getenv("IZONE_HTTP_MIN_GAP", "0.25"))
+TRANSIENT_RESPONSES = {"{ERROR}", "ERROR", "{BUSY}", "BUSY"}
+REQUEST_ERRORS = (socket.timeout, TimeoutError, OSError, http.client.HTTPException)
 
 MODES = {"cool": 1, "heat": 2, "vent": 3, "dry": 4, "auto": 5}
 MODES_REV = {v: k for k, v in MODES.items()}
@@ -20,6 +29,25 @@ ZONE_MODES = {"open": 1, "close": 2, "auto": 3, "override": 4, "constant": 5}
 ZONE_MODES_REV = {v: k for k, v in ZONE_MODES.items()}
 
 CONFIG_FILE = None
+_request_lock = threading.Lock()
+_last_request_started = 0.0
+
+
+def _retry_delay(attempt):
+    return HTTP_RETRY_DELAY * (attempt + 1)
+
+
+def _normalize_response(raw):
+    return raw.strip().upper()
+
+
+def _pace_requests():
+    global _last_request_started
+    now = time.monotonic()
+    wait_for = HTTP_MIN_GAP - (now - _last_request_started)
+    if wait_for > 0:
+        time.sleep(wait_for)
+    _last_request_started = time.monotonic()
 
 
 def discover():
@@ -49,60 +77,92 @@ def discover():
 
 def post(ip, endpoint, payload):
     """Send a POST request to the iZone bridge using raw socket to avoid chunked encoding."""
-    import http.client
-    conn = http.client.HTTPConnection(ip, 80, timeout=HTTP_TIMEOUT)
     body = json.dumps(payload)
-    conn.request("POST", endpoint, body=body, headers={"Content-Type": "application/json"})
-    resp = conn.getresponse()
-    raw = resp.read().decode("utf-8", errors="replace").strip()
-    conn.close()
+    with _request_lock:
+        _pace_requests()
+        conn = http.client.HTTPConnection(ip, 80, timeout=HTTP_TIMEOUT)
+        try:
+            conn.request("POST", endpoint, body=body, headers={"Content-Type": "application/json"})
+            resp = conn.getresponse()
+            raw = resp.read().decode("utf-8", errors="replace").strip()
+        finally:
+            conn.close()
     if raw.endswith("{OK}"):
         raw = raw[:-4]
     return raw
 
 
+def _json_request(ip, payload, retries=HTTP_RETRIES):
+    attempts = max(1, int(retries))
+    last_raw = ""
+    last_error = None
+
+    for attempt in range(attempts):
+        try:
+            raw = post(ip, "/iZoneRequestV2", payload)
+        except REQUEST_ERRORS as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(_retry_delay(attempt))
+                continue
+            raise
+
+        last_raw = raw
+        if _normalize_response(raw) in TRANSIENT_RESPONSES and attempt < attempts - 1:
+            time.sleep(_retry_delay(attempt))
+            continue
+
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as e:
+            last_error = e
+            if attempt < attempts - 1:
+                time.sleep(_retry_delay(attempt))
+                continue
+
+    snippet = last_raw if len(last_raw) <= 120 else last_raw[:117] + "..."
+    raise RuntimeError(f"Bridge returned non-JSON response: {snippet!r}") from last_error
+
+
 def query_system(ip):
     """Query system settings."""
-    raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}})
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        import time
-        time.sleep(0.3)
-        raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}})
-        return json.loads(raw)
+    return _json_request(ip, {"iZoneV2Request": {"Type": 1, "No": 0, "No1": 0}}, retries=max(4, HTTP_RETRIES))
 
 
 def query_zone(ip, index):
     """Query a specific zone."""
-    raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}})
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        # Sometimes the bridge returns OK or malformed data; retry once
-        import time
-        time.sleep(0.3)
-        raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}})
-        data = json.loads(raw)
-    return data
+    return _json_request(ip, {"iZoneV2Request": {"Type": 2, "No": index, "No1": 0}}, retries=max(3, HTTP_RETRIES))
 
 
 def query_schedule(ip, index):
     """Query a specific schedule slot."""
-    raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        import time
-        time.sleep(0.3)
-        raw = post(ip, "/iZoneRequestV2", {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}})
-        return json.loads(raw)
+    return _json_request(ip, {"iZoneV2Request": {"Type": 3, "No": index, "No1": 0}}, retries=max(3, HTTP_RETRIES))
 
 
-def send_command(ip, payload):
+def send_command(ip, payload, retries=HTTP_RETRIES):
     """Send a control command."""
-    raw = post(ip, "/iZoneCommandV2", payload)
-    return raw
+    attempts = max(1, int(retries))
+    last_raw = ""
+
+    for attempt in range(attempts):
+        try:
+            raw = post(ip, "/iZoneCommandV2", payload)
+        except REQUEST_ERRORS:
+            if attempt < attempts - 1:
+                time.sleep(_retry_delay(attempt))
+                continue
+            raise
+
+        last_raw = raw
+        normalized = _normalize_response(raw)
+        if normalized in ("", "OK"):
+            return raw
+        if normalized in TRANSIENT_RESPONSES and attempt < attempts - 1:
+            time.sleep(_retry_delay(attempt))
+            continue
+        return raw
+
+    return last_raw
 
 
 def mode_to_value(mode):

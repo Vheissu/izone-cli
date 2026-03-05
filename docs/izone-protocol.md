@@ -326,6 +326,7 @@ Value is **1-based** (schedule index + 1). Activates the schedule as a scene wit
 - Use a 5-second HTTP timeout.
 - Wait 0.3 seconds between rapid sequential requests to the same bridge.
 - Wait 5 seconds after a command before polling for updated state.
+- The bundled CLI/MCP implementations enforce request pacing and automatic retries for transient timeout/`{ERROR}` conditions.
 
 ## External Resources
 

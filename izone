@@ -565,7 +565,8 @@ def cmd_defaults_restore(args):
     for z in defaults["zones"]:
         time.sleep(0.2)
         send_command(ip, {"ZoneMode": {"Index": z["index"], "Mode": z["mode"]}})
-        send_command(ip, {"ZoneSetpoint": {"Index": z["index"], "Setpoint": z["setpoint"]}})
+        if z["mode"] != ZONE_MODES["close"]:
+            send_command(ip, {"ZoneSetpoint": {"Index": z["index"], "Setpoint": z["setpoint"]}})
         send_command(ip, {"ZoneMaxAir": {"Index": z["index"], "MaxAir": z["max_air"]}})
         send_command(ip, {"ZoneMinAir": {"Index": z["index"], "MinAir": z["min_air"]}})
 

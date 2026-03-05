@@ -551,7 +551,8 @@ def izone_defaults_restore() -> str:
     for z in defaults["zones"]:
         time.sleep(0.2)
         _send_command({"ZoneMode": {"Index": z["index"], "Mode": z["mode"]}})
-        _send_command({"ZoneSetpoint": {"Index": z["index"], "Setpoint": z["setpoint"]}})
+        if z["mode"] != ZONE_MODES["close"]:
+            _send_command({"ZoneSetpoint": {"Index": z["index"], "Setpoint": z["setpoint"]}})
         _send_command({"ZoneMaxAir": {"Index": z["index"], "MaxAir": z["max_air"]}})
         _send_command({"ZoneMinAir": {"Index": z["index"], "MinAir": z["min_air"]}})
     mode = _mode_label(defaults["mode"])

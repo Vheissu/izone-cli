@@ -74,6 +74,8 @@ docs/_build/
 # PyBuilder
 .pybuilder/
 target/
+.build/
+.swiftpm/
 
 # Jupyter Notebook
 .ipynb_checkpoints

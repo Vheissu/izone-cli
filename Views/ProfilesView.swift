@@ -21,7 +21,7 @@ struct ProfilesView: View {
                     Button {
                         showingSaveSheet = true
                     } label: {
-                        Label("Save Current As…", systemImage: "plus.circle.fill")
+                        Label("Save Current As\u{2026}", systemImage: "plus.circle.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.isBusy || model.snapshot == nil)
@@ -39,12 +39,8 @@ struct ProfilesView: View {
                         ProfileCardView(
                             profile: profile,
                             isBusy: model.isBusy,
-                            onApply: {
-                                Task { await model.applyProfile(named: profile.name) }
-                            },
-                            onDelete: {
-                                Task { await model.deleteProfile(named: profile.name) }
-                            }
+                            onApply: { Task { await model.applyProfile(named: profile.name) } },
+                            onDelete: { Task { await model.deleteProfile(named: profile.name) } }
                         )
                     }
                 }

@@ -6,6 +6,8 @@ struct ProfileCardView: View {
     let onApply: () -> Void
     let onDelete: () -> Void
 
+    @State private var isHovered = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 14) {
@@ -23,7 +25,6 @@ struct ProfileCardView: View {
                     Text(profile.name)
                         .font(.headline)
 
-                    // Attribute badges
                     HStack(spacing: 6) {
                         if let mode = profile.mode {
                             StatusBadge(text: mode.displayName, icon: mode.systemImage, color: mode.tintColor)
@@ -55,7 +56,7 @@ struct ProfileCardView: View {
 
                     Button(action: onDelete) {
                         Image(systemName: "trash")
-                            .foregroundStyle(.red.opacity(0.8))
+                            .foregroundStyle(.red.opacity(0.7))
                     }
                     .buttonStyle(.borderless)
                     .disabled(isBusy)
@@ -64,7 +65,7 @@ struct ProfileCardView: View {
             }
 
             if !profile.zones.isEmpty {
-                Divider()
+                Divider().opacity(0.3)
 
                 Text(zoneSummary)
                     .font(.caption)
@@ -75,12 +76,10 @@ struct ProfileCardView: View {
         .padding(16)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.ultraThickMaterial)
+                .fill(isHovered ? AppColors.bgElevated : AppColors.bgSurface)
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.white.opacity(0.06))
-        )
+        .animation(.easeInOut(duration: 0.15), value: isHovered)
+        .onHover { isHovered = $0 }
     }
 
     private var zoneSummary: String {

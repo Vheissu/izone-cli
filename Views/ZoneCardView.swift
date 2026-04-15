@@ -9,6 +9,7 @@ struct ZoneCardView: View {
     @State private var draftSetpoint: Double
     @State private var draftMaxAir: Int
     @State private var draftMinAir: Int
+    @State private var isHovered = false
 
     init(zone: ZoneSnapshot, isBusy: Bool, onApply: @escaping (ZoneUpdateDraft) -> Void) {
         self.zone = zone
@@ -20,35 +21,39 @@ struct ZoneCardView: View {
         _draftMinAir = State(initialValue: zone.minAir)
     }
 
-    private var modeTint: Color {
-        draftMode.tintColor
-    }
-
-    private var isClosed: Bool {
-        draftMode == .close
-    }
+    private var modeTint: Color { draftMode.tintColor }
+    private var isClosed: Bool { draftMode == .close }
 
     var body: some View {
         HStack(spacing: 0) {
-            // Color accent bar
+            // Accent bar with subtle glow
             modeTint
-                .frame(width: 4)
+                .frame(width: 5)
+                .shadow(color: modeTint.opacity(isClosed ? 0 : 0.25), radius: 6, x: 3)
 
             VStack(alignment: .leading, spacing: 16) {
                 // Header
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(zone.name)
-                            .font(.headline)
+                            .font(.title3.weight(.semibold))
 
-                        HStack(spacing: 14) {
-                            Label(formatTemperature(zone.temperature), systemImage: "thermometer.medium")
-                                .font(.callout.monospacedDigit())
-                                .foregroundStyle(.primary)
-
-                            Label(formatTemperature(zone.setpoint), systemImage: "target")
-                                .font(.callout.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                        HStack(spacing: 16) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "thermometer.medium")
+                                    .font(.caption)
+                                    .foregroundStyle(.orange)
+                                Text(formatTemperature(zone.temperature))
+                                    .font(.callout.weight(.medium).monospacedDigit())
+                            }
+                            HStack(spacing: 4) {
+                                Image(systemName: "target")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(formatTemperature(zone.setpoint))
+                                    .font(.callout.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
 
@@ -61,59 +66,42 @@ struct ZoneCardView: View {
                     )
                 }
 
-                Divider()
+                Divider().opacity(0.3)
 
-                // Mode selector
+                // Mode
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Mode")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.tertiary)
 
-                    HStack(spacing: 4) {
+                    HStack(spacing: 5) {
                         ForEach(ZoneMode.allCases) { mode in
                             zoneModeButton(for: mode)
                         }
                     }
                 }
 
-                // Setpoint & Airflow
-                VStack(spacing: 12) {
-                    HStack {
-                        Label("Setpoint", systemImage: "thermometer")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                // Controls
+                VStack(spacing: 10) {
+                    controlRow(label: "Setpoint", icon: "thermometer") {
                         Stepper(value: $draftSetpoint, in: 15...30, step: 0.5) {
                             Text(formatCelsius(draftSetpoint))
-                                .font(.callout.weight(.semibold))
-                                .monospacedDigit()
-                                .frame(minWidth: 64, alignment: .trailing)
+                                .font(.callout.weight(.semibold).monospacedDigit())
+                                .frame(minWidth: 60, alignment: .trailing)
                         }
                     }
-
-                    HStack {
-                        Label("Max Air", systemImage: "arrow.up.right")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                    controlRow(label: "Max Air", icon: "arrow.up.right") {
                         Stepper(value: $draftMaxAir, in: 0...100, step: 5) {
                             Text("\(draftMaxAir)%")
-                                .font(.callout.weight(.semibold))
-                                .monospacedDigit()
-                                .frame(minWidth: 48, alignment: .trailing)
+                                .font(.callout.weight(.semibold).monospacedDigit())
+                                .frame(minWidth: 44, alignment: .trailing)
                         }
                     }
-
-                    HStack {
-                        Label("Min Air", systemImage: "arrow.down.right")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Spacer()
+                    controlRow(label: "Min Air", icon: "arrow.down.right") {
                         Stepper(value: $draftMinAir, in: 0...100, step: 5) {
                             Text("\(draftMinAir)%")
-                                .font(.callout.weight(.semibold))
-                                .monospacedDigit()
-                                .frame(minWidth: 48, alignment: .trailing)
+                                .font(.callout.weight(.semibold).monospacedDigit())
+                                .frame(minWidth: 44, alignment: .trailing)
                         }
                     }
                 }
@@ -121,39 +109,43 @@ struct ZoneCardView: View {
                 // Actions
                 HStack {
                     Button("Apply") {
-                        onApply(
-                            ZoneUpdateDraft(
-                                mode: draftMode,
-                                setpointCelsius: draftSetpoint,
-                                maxAir: draftMaxAir,
-                                minAir: draftMinAir
-                            )
-                        )
+                        onApply(ZoneUpdateDraft(
+                            mode: draftMode,
+                            setpointCelsius: draftSetpoint,
+                            maxAir: draftMaxAir,
+                            minAir: draftMinAir
+                        ))
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(isBusy || !hasChanges)
 
-                    Button("Reset") {
-                        syncFromZone()
-                    }
-                    .disabled(isBusy || !hasChanges)
+                    Button("Reset") { syncFromZone() }
+                        .disabled(isBusy || !hasChanges)
                 }
             }
-            .padding(16)
+            .padding(18)
         }
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.ultraThickMaterial)
+                .fill(isHovered ? AppColors.bgElevated : AppColors.bgSurface)
         )
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.white.opacity(0.06))
-        )
-        .opacity(isClosed ? 0.6 : 1.0)
-        .animation(.easeInOut(duration: 0.25), value: isClosed)
-        .onChange(of: zone) { _, _ in
-            syncFromZone()
+        .opacity(isClosed ? 0.55 : 1.0)
+        .animation(.easeInOut(duration: 0.2), value: isClosed)
+        .animation(.easeInOut(duration: 0.15), value: isHovered)
+        .onHover { isHovered = $0 }
+        .onChange(of: zone) { _, _ in syncFromZone() }
+    }
+
+    // MARK: - Subviews
+
+    private func controlRow<Content: View>(label: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack {
+            Label(label, systemImage: icon)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Spacer()
+            content()
         }
     }
 
@@ -161,9 +153,7 @@ struct ZoneCardView: View {
         let isSelected = draftMode == mode
         let tint = mode.tintColor
         return Button {
-            withAnimation(.snappy(duration: 0.2)) {
-                draftMode = mode
-            }
+            withAnimation(.snappy(duration: 0.2)) { draftMode = mode }
         } label: {
             VStack(spacing: 3) {
                 Image(systemName: mode.systemImage)
@@ -172,19 +162,21 @@ struct ZoneCardView: View {
                     .font(.caption2.weight(.medium))
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 7)
+            .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? tint.opacity(0.15) : .clear)
+                    .fill(isSelected ? tint.opacity(0.14) : AppColors.bgElevated.opacity(0.5))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(isSelected ? AnyShapeStyle(tint.opacity(0.3)) : AnyShapeStyle(.quaternary), lineWidth: 1)
+                    .strokeBorder(isSelected ? tint.opacity(0.3) : AppColors.borderSubtle, lineWidth: 1)
             )
         }
         .buttonStyle(.plain)
         .foregroundStyle(isSelected ? tint : .secondary)
     }
+
+    // MARK: - State
 
     private var hasChanges: Bool {
         draftMode != (zone.mode ?? .auto)

@@ -10,6 +10,7 @@ struct IZoneDesktopApp: App {
         WindowGroup("iZone Desktop") {
             ContentView(model: model)
                 .frame(minWidth: 980, minHeight: 700)
+                .preferredColorScheme(.dark)
                 .task {
                     await model.loadIfNeeded()
                 }
@@ -20,6 +21,7 @@ struct IZoneDesktopApp: App {
             SettingsView(model: model)
                 .frame(width: 560)
                 .padding(24)
+                .preferredColorScheme(.dark)
         }
 
         .commands {
@@ -52,5 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        let renderer = ImageRenderer(content: AppIconView())
+        renderer.scale = 2
+        if let image = renderer.nsImage {
+            NSApp.applicationIconImage = image
+        }
     }
 }

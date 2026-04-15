@@ -1,5 +1,15 @@
 import SwiftUI
 
+// MARK: - App Color Palette
+
+enum AppColors {
+    static let bgBase     = Color(red: 0.075, green: 0.082, blue: 0.110)
+    static let bgSurface  = Color(red: 0.110, green: 0.122, blue: 0.161)
+    static let bgElevated = Color(red: 0.153, green: 0.167, blue: 0.212)
+    static let bgHover    = Color(red: 0.184, green: 0.200, blue: 0.251)
+    static let borderSubtle = Color.white.opacity(0.05)
+}
+
 // MARK: - Mode & Zone Tint Colors
 
 extension SystemMode {
@@ -58,68 +68,50 @@ struct StatusBadge: View {
     }
 }
 
-// MARK: - Section Header
+// MARK: - App Icon
 
-struct SectionHeader: View {
-    let title: String
-    let icon: String?
-
-    init(_ title: String, icon: String? = nil) {
-        self.title = title
-        self.icon = icon
-    }
-
+struct AppIconView: View {
     var body: some View {
-        HStack(spacing: 7) {
-            if let icon {
-                Image(systemName: icon)
-                    .foregroundStyle(.secondary)
-                    .font(.subheadline)
-            }
-            Text(title)
-                .font(.title3.weight(.semibold))
-        }
-    }
-}
-
-// MARK: - Small Metric (for environment sensors)
-
-struct SmallMetricView: View {
-    let label: String
-    let value: String
-    let icon: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.callout)
-                .foregroundStyle(tint)
-                .frame(width: 28, height: 28)
-                .background(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(tint.opacity(0.1))
+        ZStack {
+            RoundedRectangle(cornerRadius: 120, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.08, green: 0.18, blue: 0.33),
+                            Color(red: 0.03, green: 0.06, blue: 0.12),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
                 )
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(value)
-                    .font(.callout.weight(.semibold))
-                    .monospacedDigit()
-                Text(label)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.25, green: 0.78, blue: 0.85).opacity(0.14),
+                            .clear,
+                        ],
+                        center: .center,
+                        startRadius: 50,
+                        endRadius: 230
+                    )
+                )
 
-            Spacer(minLength: 0)
+            Image(systemName: "snowflake")
+                .font(.system(size: 200, weight: .ultraLight))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.50, green: 0.96, blue: 0.92),
+                            Color(red: 0.22, green: 0.70, blue: 0.88),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .shadow(color: Color(red: 0.30, green: 0.85, blue: 0.80).opacity(0.35), radius: 30)
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(.thickMaterial)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(.white.opacity(0.04))
-        )
+        .frame(width: 512, height: 512)
     }
 }

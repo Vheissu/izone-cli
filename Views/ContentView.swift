@@ -25,7 +25,7 @@ struct ContentView: View {
                     .padding()
                 }
             }
-            .background(.regularMaterial)
+            .background(AppColors.bgBase)
         }
         .toolbar {
             ToolbarItemGroup {

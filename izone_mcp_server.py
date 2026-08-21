@@ -1077,18 +1077,44 @@ def izone_set_location(place: str) -> str:
     outdoor line in status). One-time setup; geocoded via Open-Meteo (no API key).
 
     Args:
-        place: Suburb/city, e.g. "Perth", "Baldivis WA", "Melbourne, Australia"
+        place: Suburb/city, optionally qualified: "Perth", "Paddington, Brisbane",
+               "Richmond, Victoria", "Springfield, USA"
     """
     import urllib.parse
-    params = urllib.parse.urlencode({"name": place, "count": 1, "language": "en", "format": "json"})
-    try:
+
+    def _geocode(name: str, count: int = 10) -> list:
+        params = urllib.parse.urlencode({"name": name, "count": count, "language": "en", "format": "json"})
         data = _http_get_json("https://geocoding-api.open-meteo.com/v1/search?" + params)
+        return data.get("results") or []
+
+    parts = [p.strip() for p in place.split(",") if p.strip()]
+    if not parts:
+        return "Error: empty place name"
+    try:
+        results = _geocode(parts[0])
     except Exception as e:
         return f"Error: geocoding lookup failed ({e})"
-    results = data.get("results") or []
     if not results:
-        return f"Error: no location found for {place!r}. Try adding a state or country."
+        return f"Error: no location found for {parts[0]!r}. Try the suburb name alone, or add a qualifier after a comma."
+
     r = results[0]
+    if len(parts) > 1 and len(results) > 1:
+        # Disambiguate with the qualifier: match it against each candidate's region fields,
+        # else geocode the qualifier itself and pick the nearest candidate to it.
+        qual = " ".join(parts[1:]).lower()
+        def _fields(c):
+            return [str(c.get(k, "")).lower() for k in ("name", "admin1", "admin2", "admin3", "admin4", "country")]
+        matches = [c for c in results if any(qual in f or f and f in qual for f in _fields(c) if f)]
+        if matches:
+            r = matches[0]
+        else:
+            try:
+                anchors = _geocode(parts[1], count=1)
+            except Exception:
+                anchors = []
+            if anchors:
+                a = anchors[0]
+                r = min(results, key=lambda c: (c["latitude"] - a["latitude"]) ** 2 + (c["longitude"] - a["longitude"]) ** 2)
     name = ", ".join(str(p) for p in [r.get("name"), r.get("admin1"), r.get("country")] if p)
     cfg = _load_config()
     cfg["location"] = {"name": name, "lat": r["latitude"], "lon": r["longitude"]}

@@ -274,7 +274,8 @@ def _save_config(cfg: dict):
 # --- Outdoor weather (Open-Meteo, no API key; skipped when no location is configured) ---
 
 WEATHER_CACHE_TTL = 900
-_weather_cache = {"ts": 0.0, "data": None}
+WEATHER_FAIL_TTL = 60
+_weather_cache = {"ts": 0.0, "data": None, "fail_ts": 0.0}
 
 
 def _http_get_json(url: str, timeout: int = 6) -> dict:
@@ -291,6 +292,8 @@ def _get_weather() -> dict | None:
         return None
     if _weather_cache["data"] and time.time() - _weather_cache["ts"] < WEATHER_CACHE_TTL:
         return _weather_cache["data"]
+    if time.time() - _weather_cache["fail_ts"] < WEATHER_FAIL_TTL:
+        return None  # recent lookup failed; don't stall every poll retrying
     import urllib.parse
     params = urllib.parse.urlencode({
         "latitude": loc["lat"],
@@ -317,6 +320,7 @@ def _get_weather() -> dict | None:
         _weather_cache["data"] = weather
         return weather
     except Exception:
+        _weather_cache["fail_ts"] = time.time()
         return None
 
 
@@ -653,8 +657,12 @@ def izone_comfort_setup(zones: str, temperature: float, mode: str = "cool", fan:
             _send_command({"ZoneSetpoint": {"Index": i, "Setpoint": setpoint}})
             results.append(f"Zone {i}: auto at {temperature}C")
         else:
-            _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES["close"]}})
-            results.append(f"Zone {i}: closed")
+            z = _query_zone(i).get("ZonesV2", {})
+            if _zone_is_constant(z):
+                results.append(f"Zone {i}: left open (constant zone — must stay open)")
+            else:
+                _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES["close"]}})
+                results.append(f"Zone {i}: closed")
 
     # Set sleep timer and schedule auto-restore
     if sleep_timer > 0:
@@ -1010,8 +1018,12 @@ def izone_apply_profile(name: str) -> str:
             zmode = ZONE_MODES_REV.get(zconf["mode"], str(zconf["mode"]))
             results.append(f"Zone {i}: {zmode} at {_fmt_temp(zconf['temp'])}C")
         elif profile.get("close_others", True):
-            _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES["close"]}})
-            results.append(f"Zone {i}: closed")
+            z = _query_zone(i).get("ZonesV2", {})
+            if _zone_is_constant(z):
+                results.append(f"Zone {i}: left open (constant zone — must stay open)")
+            else:
+                _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES["close"]}})
+                results.append(f"Zone {i}: closed")
         time.sleep(0.2)
 
     return f"Profile '{name}' applied:\n" + "\n".join(results)
@@ -1149,6 +1161,7 @@ def izone_history(hours: float = 24, zone: str = "") -> str:
         hours: Look-back window in hours (default 24)
         zone: Optional zone name (or part of one) to focus on; empty for all zones + system
     """
+    hours = max(0.25, min(hours, 24 * 365))
     recs = _read_history(hours)
     if len(recs) < 2:
         return (f"Not enough history in the last {hours:g}h ({len(recs)} snapshots). "
@@ -1187,9 +1200,11 @@ def izone_history(hours: float = 24, zone: str = "") -> str:
         for z in r.get("zones", []):
             if z.get("n") and z["n"] not in zone_names:
                 zone_names.append(z["n"])
+    matched_any = False
     for name in zone_names:
         if zone_filter and zone_filter not in name.lower():
             continue
+        matched_any = True
         temps = []
         sets = []
         for r in recs:
@@ -1198,6 +1213,9 @@ def izone_history(hours: float = 24, zone: str = "") -> str:
                     temps.append(z.get("t"))
                     sets.append(z.get("s"))
         _series_summary(name, temps, sets)
+    if zone_filter and not matched_any:
+        known = ", ".join(zone_names) if zone_names else "(none logged yet)"
+        return f"No zone matching {zone!r} in the logged history. Zones seen: {known}"
 
     on_count = sum(1 for r in recs if r.get("on"))
     lines.append(f"  System ON in {on_count}/{len(recs)} snapshots ({on_count / len(recs) * 100:.0f}%)")
@@ -1206,6 +1224,35 @@ def izone_history(hours: float = 24, zone: str = "") -> str:
 
 def _zone_open(z: dict) -> bool:
     return z.get("Mode") != ZONE_MODES["close"]
+
+
+def _zone_is_constant(z: dict) -> bool:
+    """Constant zones are pressure relief — they must never be closed."""
+    return z.get("ZoneType") == 2 or z.get("Mode") == ZONE_MODES["constant"]
+
+
+def _zone_temp_controlled(z: dict) -> bool:
+    """ZoneType 1 zones are open/close only — they can't hold a setpoint in auto mode."""
+    return z.get("ZoneType") != 1
+
+
+def _temp_plausible(c: float) -> bool:
+    """Reject readings from dead/faulty sensors (0.0C defaults, wild values)."""
+    return 5.0 < c < 45.0
+
+
+VENT_MIN_OUTDOOR = 14.0
+
+
+def _fresh_air_configured() -> bool:
+    """Vent mode only moves outdoor air in if the system has a fresh-air intake; most
+    base ducted systems just recirculate, so free-cooling via vent is opt-in."""
+    return bool(_load_config().get("fresh_air"))
+
+
+def _is_night() -> bool:
+    h = time.localtime().tm_hour
+    return h >= 21 or h < 7
 
 
 @mcp.tool()
@@ -1224,10 +1271,14 @@ def izone_insights() -> str:
 
     open_zones = [(i, z) for i, z in enumerate(zones) if _zone_open(z)]
 
-    # Zones struggling to reach setpoint
+    # Zones struggling to reach setpoint (skip zones whose sensor reading is implausible)
     for _, z in open_zones:
         zt = (z.get("Temp") or 0) / 100
         zs = (z.get("Setpoint") or 0) / 100
+        if not _temp_plausible(zt):
+            findings.append(f"'{z['Name']}' is reporting {zt:.1f}C — that reads like a faulty or "
+                            f"disconnected sensor; ignoring it for comfort decisions.")
+            continue
         gap = zt - zs
         if on and abs(gap) >= 1.5:
             direction = "above" if gap > 0 else "below"
@@ -1246,8 +1297,12 @@ def izone_insights() -> str:
     if w and w.get("temp") is not None:
         out = w["temp"]
         if on and mode == "cool" and out < return_air - 2 and out < setpoint + 1:
-            findings.append(f"It's only {out:.1f}C outside vs {return_air:.1f}C inside — vent mode "
-                            f"(or open windows) would cool for near-zero energy.")
+            if _fresh_air_configured() and out >= VENT_MIN_OUTDOOR:
+                findings.append(f"It's only {out:.1f}C outside vs {return_air:.1f}C inside — vent mode "
+                                f"(fresh-air intake) would cool for near-zero energy.")
+            else:
+                findings.append(f"It's only {out:.1f}C outside vs {return_air:.1f}C inside — opening "
+                                f"windows would cool for free instead of running the compressor.")
         if not on and w.get("forecast_max") is not None and w["forecast_max"] >= 32 and return_air < 26:
             findings.append(f"Forecast peaks at {w['forecast_max']:.0f}C in the next 12h — pre-cooling "
                             f"now while it's mild is cheaper than fighting the peak later.")
@@ -1339,7 +1394,15 @@ def izone_recommend(target: float = 0, occupied_zones: str = "", apply: bool = F
         wanted = [i for i, z in enumerate(zones) if _zone_open(z)] or list(range(len(zones)))
 
     occ_temps = [(zones[i].get("Temp") or 0) / 100 for i in wanted]
-    indoor = sum(occ_temps) / len(occ_temps) if occ_temps else return_air
+    occ_temps = [t for t in occ_temps if _temp_plausible(t)]  # drop faulty-sensor readings
+    if occ_temps:
+        indoor = sum(occ_temps) / len(occ_temps)
+    elif _temp_plausible(return_air):
+        indoor = return_air
+    else:
+        return (f"Error: no plausible temperature readings (zones and return air all look like "
+                f"faulty sensors, return air {return_air:.1f}C) — not making changes. "
+                f"Check izone_status and the sensors.")
 
     # Pick target
     if target <= 0:
@@ -1353,14 +1416,25 @@ def izone_recommend(target: float = 0, occupied_zones: str = "", apply: bool = F
     # Decide the plan
     reasons = []
     band = 0.8
+    # Vent-based free cooling is only real with a fresh-air intake (most ducted systems
+    # recirculate), and never with frigid outdoor air that would badly overshoot.
+    vent_viable = (out is not None and out <= indoor - 2 and out <= target + 1
+                   and out >= VENT_MIN_OUTDOOR)
     if indoor > target + band:
-        if out is not None and out <= indoor - 2 and out <= target + 1:
-            plan_mode, plan_fan = "vent", "high"
+        if vent_viable and _fresh_air_configured():
+            plan_mode = "vent"
+            plan_fan = "medium" if _is_night() else "high"
             reasons.append(f"indoor {indoor:.1f}C is warm but it's only {out:.1f}C outside — "
-                           f"vent mode gives near-free cooling")
+                           f"vent mode (fresh-air intake) gives near-free cooling")
+            if _is_night():
+                reasons.append("fan capped at medium for night-time noise")
         else:
             plan_mode, plan_fan = "cool", "auto"
             reasons.append(f"indoor {indoor:.1f}C is {indoor - target:.1f}C above the {target:.1f}C target")
+            if vent_viable and not _fresh_air_configured():
+                reasons.append(f"it's only {out:.1f}C outside — opening windows would do this for free; "
+                               f"if the system has a fresh-air intake, set \"fresh_air\": true in "
+                               f"~/.config/izone/config.json and vent mode can be used automatically")
             if w and w.get("forecast_max") is not None and w["forecast_max"] >= indoor + 2:
                 reasons.append(f"forecast peaks at {w['forecast_max']:.0f}C, so cooling now also pre-empts the peak")
     elif indoor < target - band:
@@ -1383,15 +1457,24 @@ def izone_recommend(target: float = 0, occupied_zones: str = "", apply: bool = F
 
     zone_plan = []
     for i, z in enumerate(zones):
+        name = z.get("Name", str(i))
         if i in wanted:
-            zone_plan.append((i, z.get("Name", str(i)), "auto", target))
+            if _zone_temp_controlled(z):
+                zone_plan.append((i, name, "auto", target))
+            else:
+                zone_plan.append((i, name, "open", None))  # open/close-only zone: no setpoint
+        elif _zone_is_constant(z):
+            zone_plan.append((i, name, "keep", None))  # constant zone: never close
         else:
-            zone_plan.append((i, z.get("Name", str(i)), "close", None))
+            zone_plan.append((i, name, "close", None))
 
     lines = [f"Plan: {plan_mode.upper()} to {target:.1f}C, fan {plan_fan}"]
     lines.append("Because: " + "; ".join(reasons) + ".")
     for i, name, zmode, ztemp in zone_plan:
-        lines.append(f"  Zone {i} {name}: {zmode}" + (f" at {ztemp:.1f}C" if ztemp else ""))
+        if zmode == "keep":
+            lines.append(f"  Zone {i} {name}: left as-is (constant zone — must stay open)")
+        else:
+            lines.append(f"  Zone {i} {name}: {zmode}" + (f" at {ztemp:.1f}C" if ztemp else ""))
     if w and w.get("temp") is not None:
         lines.append(f"Outdoor: {w['temp']:.1f}C, next 12h {w['forecast_min']:.0f}-{w['forecast_max']:.0f}C.")
 
@@ -1411,6 +1494,8 @@ def izone_recommend(target: float = 0, occupied_zones: str = "", apply: bool = F
     setpoint = round(int(target * 100) / 50) * 50
     _send_command({"SysSetpoint": setpoint})
     for i, name, zmode, ztemp in zone_plan:
+        if zmode == "keep":
+            continue
         time.sleep(0.2)
         _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES[zmode]}})
         if zmode == "auto" and ztemp:

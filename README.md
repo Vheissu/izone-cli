@@ -153,6 +153,14 @@ The MCP server keeps a local history and understands the weather:
   outside), pre-cooling/pre-heating ahead of forecast peaks, and smarter mode selection.
   Weather comes from Open-Meteo (free, no API key); with no location configured, all
   weather features silently skip. Config lives in `~/.config/izone/config.json`.
+- Vent-mode free cooling is opt-in: most ducted systems recirculate indoor air, so vent
+  only helps if yours has a fresh-air intake. Set `"fresh_air": true` in
+  `~/.config/izone/config.json` to let recommendations use vent automatically; without it
+  they suggest opening windows instead. Vent is never chosen when outdoor air is below
+  14C, and the fan is capped at medium overnight.
+- Safety rails: constant (pressure-relief) zones are never closed, open/close-only zones
+  never get a setpoint, and implausible sensor readings (dead sensor reporting 0.0C) are
+  excluded from decisions rather than acted on.
 - `izone_recommend` composes it all into one plan — occupied zones, target temp, mode,
   fan — and can apply it (saving defaults first so it's reversible).
 

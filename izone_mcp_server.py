@@ -16,6 +16,13 @@ Temperature values from the API are multiplied by 100 (e.g., 2400 = 24.0C).
 When setting temperatures, accept normal values like 22.5 and convert to API format internally.
 Always check current status before making changes. Be energy-conscious.
 
+BE INTELLIGENT: For any open-ended request ("make it comfortable", "it's hot", "sort the AC out"),
+prefer izone_recommend over manually composing commands — it weighs indoor readings, outdoor
+weather, and the forecast, and can apply its own plan. Use izone_insights for a health/efficiency
+review and izone_history to see how zones have tracked over time. Every status poll is logged
+automatically, so history gets richer the more the system is used. If weather-aware features
+report no location, offer to set one up once with izone_set_location.
+
 IMPORTANT: When making temporary changes (bedtime mode, working from home, etc.), ALWAYS call
 izone_defaults_save first to snapshot the current settings, then make your changes. This lets the
 user restore their normal settings later with izone_defaults_restore. Only skip saving if the user
@@ -243,14 +250,172 @@ def _fmt_temp(val) -> str:
     return str(val)
 
 
+# --- Config (location etc.) ---
+
+CONFIG_FILE = os.path.expanduser("~/.config/izone/config.json")
+
+
+def _load_config() -> dict:
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_config(cfg: dict):
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+# --- Outdoor weather (Open-Meteo, no API key; skipped when no location is configured) ---
+
+WEATHER_CACHE_TTL = 900
+_weather_cache = {"ts": 0.0, "data": None}
+
+
+def _http_get_json(url: str, timeout: int = 6) -> dict:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "izone-mcp"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8", errors="replace"))
+
+
+def _get_weather() -> dict | None:
+    """Current outdoor conditions + 12h forecast, or None if no location / lookup fails."""
+    loc = _load_config().get("location")
+    if not loc:
+        return None
+    if _weather_cache["data"] and time.time() - _weather_cache["ts"] < WEATHER_CACHE_TTL:
+        return _weather_cache["data"]
+    import urllib.parse
+    params = urllib.parse.urlencode({
+        "latitude": loc["lat"],
+        "longitude": loc["lon"],
+        "current": "temperature_2m,relative_humidity_2m,apparent_temperature",
+        "hourly": "temperature_2m",
+        "forecast_hours": 12,
+        "timezone": "auto",
+    })
+    try:
+        data = _http_get_json("https://api.open-meteo.com/v1/forecast?" + params)
+        cur = data.get("current", {})
+        hourly_temps = data.get("hourly", {}).get("temperature_2m", []) or []
+        weather = {
+            "place": loc.get("name", ""),
+            "temp": cur.get("temperature_2m"),
+            "feels_like": cur.get("apparent_temperature"),
+            "humidity": cur.get("relative_humidity_2m"),
+            "forecast_12h": hourly_temps,
+            "forecast_max": max(hourly_temps) if hourly_temps else None,
+            "forecast_min": min(hourly_temps) if hourly_temps else None,
+        }
+        _weather_cache["ts"] = time.time()
+        _weather_cache["data"] = weather
+        return weather
+    except Exception:
+        return None
+
+
+# --- History (auto-logged snapshots of every full status poll) ---
+
+HISTORY_FILE = os.path.expanduser("~/.config/izone/history.jsonl")
+HISTORY_MAX_BYTES = 4_000_000
+HISTORY_KEEP_BYTES = 2_000_000
+
+
+def _full_state() -> tuple:
+    """Query system + all zones, log a history snapshot, and return (system, zones)."""
+    data = _query_system()
+    s = data["SystemV2"]
+    zones = []
+    for i in range(s["NoOfZones"]):
+        zdata = _query_zone(i)
+        z = zdata.get("ZonesV2", zdata)
+        zones.append(z)
+    _log_snapshot(s, zones)
+    return s, zones
+
+
+def _log_snapshot(s: dict, zones: list):
+    try:
+        rec = {
+            "ts": int(time.time()),
+            "on": int(bool(s.get("SysOn"))),
+            "mode": s.get("SysMode"),
+            "fan": s.get("SysFan"),
+            "set": s.get("Setpoint"),
+            "temp": s.get("Temp"),
+            "supply": s.get("Supply"),
+            "rh": s.get("InRh"),
+            "eco2": s.get("IneCO2"),
+            "tvoc": s.get("InTVOC"),
+            "zones": [
+                {"n": z.get("Name", ""), "t": z.get("Temp"), "s": z.get("Setpoint"), "m": z.get("Mode")}
+                for z in zones
+            ],
+        }
+        w = _get_weather()
+        if w and w.get("temp") is not None:
+            rec["out"] = w["temp"]
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+        with open(HISTORY_FILE, "a") as f:
+            f.write(json.dumps(rec, separators=(",", ":")) + "\n")
+        if os.path.getsize(HISTORY_FILE) > HISTORY_MAX_BYTES:
+            with open(HISTORY_FILE, "rb") as f:
+                f.seek(-HISTORY_KEEP_BYTES, os.SEEK_END)
+                tail = f.read()
+            tail = tail[tail.index(b"\n") + 1:] if b"\n" in tail else tail
+            with open(HISTORY_FILE, "wb") as f:
+                f.write(tail)
+    except Exception:
+        pass  # history is best-effort; never let logging break a live command
+
+
+def _read_history(hours: float) -> list:
+    if not os.path.exists(HISTORY_FILE):
+        return []
+    cutoff = time.time() - hours * 3600
+    out = []
+    with open(HISTORY_FILE) as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("ts", 0) >= cutoff:
+                out.append(rec)
+    return out
+
+
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def _sparkline(values: list, buckets: int = 24) -> str:
+    vals = [v for v in values if isinstance(v, (int, float))]
+    if not vals:
+        return ""
+    if len(vals) > buckets:
+        step = len(vals) / buckets
+        vals = [vals[int(i * step)] for i in range(buckets)]
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1e-9:
+        return SPARK_CHARS[3] * len(vals)
+    return "".join(SPARK_CHARS[int((v - lo) / (hi - lo) * (len(SPARK_CHARS) - 1))] for v in vals)
+
+
 # --- MCP Tools ---
 
 @mcp.tool()
 def izone_status() -> str:
     """Get the full status of the iZone AC system including all zones.
-    Returns system power state, mode, fan speed, temperatures, humidity, air quality, and all zone details."""
-    data = _query_system()
-    s = data["SystemV2"]
+    Returns system power state, mode, fan speed, temperatures, humidity, air quality, outdoor
+    weather (when a location is configured), and all zone details. Each call also logs a
+    history snapshot used by izone_history and izone_insights."""
+    s, zones = _full_state()
     on_off = "ON" if s["SysOn"] else "OFF"
     mode = _mode_label(s["SysMode"])
     fan = _fan_label(s["SysFan"])
@@ -270,14 +435,20 @@ def izone_status() -> str:
     if s.get("InTVOC"):
         lines.append(f"TVOC: {s['InTVOC']} ppb")
 
+    w = _get_weather()
+    if w and w.get("temp") is not None:
+        outdoor = f"Outdoor: {w['temp']:.1f}C"
+        if w.get("feels_like") is not None:
+            outdoor += f" (feels like {w['feels_like']:.1f}C)"
+        if w.get("forecast_max") is not None:
+            outdoor += f", next 12h {w['forecast_min']:.0f}-{w['forecast_max']:.0f}C"
+        lines.append(outdoor)
+
     lines.append("")
     lines.append(f"{'#':<3} {'Name':<12} {'Temp':>6} {'Set':>6} {'Mode':<10} {'Air%':>5}")
     lines.append("-" * 48)
 
-    num_zones = s["NoOfZones"]
-    for i in range(num_zones):
-        zdata = _query_zone(i)
-        z = zdata.get("ZonesV2", zdata)
+    for i, z in enumerate(zones):
         zmode = ZONE_MODES_REV.get(z["Mode"], str(z["Mode"]))
         lines.append(f"{i:<3} {z['Name']:<12} {_fmt_temp(z['Temp']):>6} {_fmt_temp(z['Setpoint']):>6} {zmode:<10} {z['MaxAir']:>4}%")
 
@@ -501,18 +672,14 @@ DEFAULTS_FILE = os.path.expanduser("~/.config/izone/defaults.json")
 def izone_defaults_save() -> str:
     """Save the current system and zone settings as defaults. Call this BEFORE making temporary changes
     (bedtime mode, working from home, etc.) so the user can restore their normal settings later."""
-    data = _query_system()
-    s = data["SystemV2"]
-    num_zones = s["NoOfZones"]
+    s, zones = _full_state()
     defaults = {
         "mode": s["SysMode"],
         "fan": s["SysFan"],
         "setpoint": s["Setpoint"],
         "zones": [],
     }
-    for i in range(num_zones):
-        zdata = _query_zone(i)
-        z = zdata.get("ZonesV2", zdata)
+    for i, z in enumerate(zones):
         defaults["zones"].append({
             "index": i,
             "name": z["Name"],
@@ -764,9 +931,7 @@ def izone_save_profile(name: str) -> str:
     Args:
         name: Profile name (e.g., "summer-day", "bedtime", "working-from-home")
     """
-    data = _query_system()
-    s = data["SystemV2"]
-    num_zones = s["NoOfZones"]
+    s, zones = _full_state()
 
     profile = {
         "mode": MODES_REV.get(s["SysMode"], str(s["SysMode"])),
@@ -775,9 +940,7 @@ def izone_save_profile(name: str) -> str:
         "close_others": True,
         "zones": {},
     }
-    for i in range(num_zones):
-        zdata = _query_zone(i)
-        z = zdata.get("ZonesV2", zdata)
+    for i, z in enumerate(zones):
         profile["zones"][str(i)] = {
             "mode": z["Mode"],
             "temp": z["Setpoint"],
@@ -903,6 +1066,331 @@ def izone_create_profile(name: str, mode: str = "cool", fan: str = "auto", tempe
     zone_count = len(profile["zones"])
     zone_desc = f", {zone_count} zones" if zone_count else ", all zones at system temp"
     return f"Profile '{name}' created (mode={mode}, fan={fan}, temp={temperature}C{zone_desc})"
+
+
+# --- Intelligence tools ---
+
+
+@mcp.tool()
+def izone_set_location(place: str) -> str:
+    """Set the home location for outdoor-weather-aware features (insights, recommendations,
+    outdoor line in status). One-time setup; geocoded via Open-Meteo (no API key).
+
+    Args:
+        place: Suburb/city, e.g. "Perth", "Baldivis WA", "Melbourne, Australia"
+    """
+    import urllib.parse
+    params = urllib.parse.urlencode({"name": place, "count": 1, "language": "en", "format": "json"})
+    try:
+        data = _http_get_json("https://geocoding-api.open-meteo.com/v1/search?" + params)
+    except Exception as e:
+        return f"Error: geocoding lookup failed ({e})"
+    results = data.get("results") or []
+    if not results:
+        return f"Error: no location found for {place!r}. Try adding a state or country."
+    r = results[0]
+    name = ", ".join(str(p) for p in [r.get("name"), r.get("admin1"), r.get("country")] if p)
+    cfg = _load_config()
+    cfg["location"] = {"name": name, "lat": r["latitude"], "lon": r["longitude"]}
+    _save_config(cfg)
+    _weather_cache["data"] = None
+    w = _get_weather()
+    extra = f" Currently {w['temp']:.1f}C outside." if w and w.get("temp") is not None else ""
+    return f"Location set to {name} ({r['latitude']:.3f}, {r['longitude']:.3f}).{extra}"
+
+
+@mcp.tool()
+def izone_sleep(minutes: int) -> str:
+    """Set the sleep timer: the AC turns itself off after the given minutes.
+
+    Args:
+        minutes: Minutes until auto-off (0 to clear the timer)
+    """
+    if minutes < 0 or minutes > 720:
+        return "Error: minutes must be 0-720"
+    result = _send_command({"SysSleepTimer": minutes})
+    if minutes == 0:
+        return f"Sleep timer cleared ({result})"
+    return f"Sleep timer set: AC will turn off in {minutes} minutes ({result})"
+
+
+@mcp.tool()
+def izone_history(hours: float = 24, zone: str = "") -> str:
+    """Summarize logged temperature history: per-zone min/avg/max, trend direction, and a
+    sparkline. History accumulates automatically every time the system is polled.
+
+    Args:
+        hours: Look-back window in hours (default 24)
+        zone: Optional zone name (or part of one) to focus on; empty for all zones + system
+    """
+    recs = _read_history(hours)
+    if len(recs) < 2:
+        return (f"Not enough history in the last {hours:g}h ({len(recs)} snapshots). "
+                "History accumulates automatically each time izone_status, izone_insights, or "
+                "izone_recommend runs — check back after the system has been polled a few times.")
+
+    span_h = (recs[-1]["ts"] - recs[0]["ts"]) / 3600
+    lines = [f"{len(recs)} snapshots over {span_h:.1f}h:"]
+
+    def _series_summary(label: str, values: list, setpoints: list | None = None):
+        vals = [(v or 0) / 100 for v in values if isinstance(v, (int, float))]
+        if not vals:
+            return
+        trend = vals[-1] - vals[0]
+        arrow = "→" if abs(trend) < 0.3 else ("↑" if trend > 0 else "↓")
+        line = (f"  {label:<14} now {vals[-1]:.1f}C, range {min(vals):.1f}-{max(vals):.1f}C, "
+                f"avg {sum(vals)/len(vals):.1f}C {arrow}{abs(trend):.1f}  {_sparkline(vals)}")
+        if setpoints:
+            sps = [(sp or 0) / 100 for sp in setpoints if isinstance(sp, (int, float))]
+            if sps:
+                line += f"  (set {sps[-1]:.1f}C)"
+        lines.append(line)
+
+    zone_filter = zone.strip().lower()
+    if not zone_filter:
+        _series_summary("Return air", [r.get("temp") for r in recs])
+        outs = [r["out"] for r in recs if isinstance(r.get("out"), (int, float))]
+        if len(outs) >= 2:
+            trend = outs[-1] - outs[0]
+            arrow = "→" if abs(trend) < 0.3 else ("↑" if trend > 0 else "↓")
+            lines.append(f"  {'Outdoor':<14} now {outs[-1]:.1f}C, range {min(outs):.1f}-{max(outs):.1f}C "
+                         f"{arrow}{abs(trend):.1f}  {_sparkline(outs)}")
+
+    zone_names = []
+    for r in recs:
+        for z in r.get("zones", []):
+            if z.get("n") and z["n"] not in zone_names:
+                zone_names.append(z["n"])
+    for name in zone_names:
+        if zone_filter and zone_filter not in name.lower():
+            continue
+        temps = []
+        sets = []
+        for r in recs:
+            for z in r.get("zones", []):
+                if z.get("n") == name:
+                    temps.append(z.get("t"))
+                    sets.append(z.get("s"))
+        _series_summary(name, temps, sets)
+
+    on_count = sum(1 for r in recs if r.get("on"))
+    lines.append(f"  System ON in {on_count}/{len(recs)} snapshots ({on_count / len(recs) * 100:.0f}%)")
+    return "\n".join(lines)
+
+
+def _zone_open(z: dict) -> bool:
+    return z.get("Mode") != ZONE_MODES["close"]
+
+
+@mcp.tool()
+def izone_insights() -> str:
+    """Analyze the system's current health and efficiency: zones struggling to reach setpoint,
+    the system working against itself, free-cooling opportunities, air quality and humidity
+    warnings, and energy-saving suggestions. Combines live readings, outdoor weather, and
+    logged history."""
+    s, zones = _full_state()
+    w = _get_weather()
+    findings = []
+    on = bool(s.get("SysOn"))
+    mode = _mode_label(s.get("SysMode"))
+    setpoint = (s.get("Setpoint") or 0) / 100
+    return_air = (s.get("Temp") or 0) / 100
+
+    open_zones = [(i, z) for i, z in enumerate(zones) if _zone_open(z)]
+
+    # Zones struggling to reach setpoint
+    for _, z in open_zones:
+        zt = (z.get("Temp") or 0) / 100
+        zs = (z.get("Setpoint") or 0) / 100
+        gap = zt - zs
+        if on and abs(gap) >= 1.5:
+            direction = "above" if gap > 0 else "below"
+            findings.append(f"'{z['Name']}' is {abs(gap):.1f}C {direction} its {zs:.1f}C setpoint "
+                            f"(now {zt:.1f}C) — check its airflow ({z.get('MaxAir', '?')}% max) or door/window.")
+
+    # System fighting itself
+    if on and mode == "cool" and return_air <= setpoint - 1.0:
+        findings.append(f"Cooling but return air ({return_air:.1f}C) is already {setpoint - return_air:.1f}C "
+                        f"below the {setpoint:.1f}C setpoint — raise the setpoint or switch off.")
+    if on and mode == "heat" and return_air >= setpoint + 1.0:
+        findings.append(f"Heating but return air ({return_air:.1f}C) is already above the "
+                        f"{setpoint:.1f}C setpoint — lower the setpoint or switch off.")
+
+    # Free cooling / outdoor-aware
+    if w and w.get("temp") is not None:
+        out = w["temp"]
+        if on and mode == "cool" and out < return_air - 2 and out < setpoint + 1:
+            findings.append(f"It's only {out:.1f}C outside vs {return_air:.1f}C inside — vent mode "
+                            f"(or open windows) would cool for near-zero energy.")
+        if not on and w.get("forecast_max") is not None and w["forecast_max"] >= 32 and return_air < 26:
+            findings.append(f"Forecast peaks at {w['forecast_max']:.0f}C in the next 12h — pre-cooling "
+                            f"now while it's mild is cheaper than fighting the peak later.")
+        if not on and w.get("forecast_min") is not None and w["forecast_min"] <= 8 and return_air > 18:
+            findings.append(f"Forecast drops to {w['forecast_min']:.0f}C in the next 12h — consider "
+                            f"pre-heating before the cold arrives.")
+    else:
+        findings.append("(No outdoor weather — set a home location once with izone_set_location "
+                        "to unlock free-cooling and pre-conditioning insights.)")
+
+    # Air quality / humidity
+    if s.get("IneCO2") and s["IneCO2"] > 1000:
+        findings.append(f"eCO2 is {s['IneCO2']} ppm (fresh air is ~400) — the air is stale; "
+                        f"run vent mode or open windows.")
+    if s.get("InTVOC") and s["InTVOC"] > 500:
+        findings.append(f"TVOC is {s['InTVOC']} ppb — elevated indoor pollutants; ventilate.")
+    if s.get("InRh") and s["InRh"] > 65 and mode != "dry":
+        findings.append(f"Humidity is {s['InRh']}% — dry mode would improve comfort at the same temp.")
+
+    # Energy
+    if on and len(open_zones) == len(zones) and len(zones) > 3:
+        findings.append(f"All {len(zones)} zones are open — closing unoccupied rooms concentrates "
+                        f"airflow and cuts runtime.")
+    if on and mode == "cool" and setpoint < 22:
+        findings.append(f"Cooling setpoint is {setpoint:.1f}C — every degree below 23-24C adds "
+                        f"roughly 10% to running cost.")
+    if on and mode == "heat" and setpoint > 22:
+        findings.append(f"Heating setpoint is {setpoint:.1f}C — every degree above 20-21C adds "
+                        f"roughly 10% to running cost.")
+
+    # History-informed: zone that never reaches setpoint
+    recs = _read_history(24)
+    if len(recs) >= 6:
+        for _, z in open_zones:
+            name = z.get("Name", "")
+            gaps = []
+            for r in recs:
+                for zr in r.get("zones", []):
+                    if zr.get("n") == name and r.get("on") and zr.get("m") != ZONE_MODES["close"]:
+                        if isinstance(zr.get("t"), (int, float)) and isinstance(zr.get("s"), (int, float)):
+                            gaps.append((zr["t"] - zr["s"]) / 100)
+            if len(gaps) >= 6 and min(abs(g) for g in gaps) >= 1.0:
+                side = "above" if gaps[-1] > 0 else "below"
+                findings.append(f"'{name}' has stayed at least 1C {side} setpoint across the last 24h "
+                                f"of running — it may need a higher max-airflow or a duct/balance check.")
+
+    header = (f"System {'ON' if on else 'OFF'}, mode {mode}, set {setpoint:.1f}C, "
+              f"return air {return_air:.1f}C"
+              + (f", outdoor {w['temp']:.1f}C" if w and w.get("temp") is not None else ""))
+    if not findings:
+        return header + "\n\nAll good: no comfort, efficiency, or air-quality issues detected."
+    return header + "\n\n" + "\n".join(f"- {f}" for f in findings)
+
+
+@mcp.tool()
+def izone_recommend(target: float = 0, occupied_zones: str = "", apply: bool = False) -> str:
+    """Recommend (and optionally apply) the smartest AC plan right now, weighing indoor readings,
+    outdoor weather, and the 12h forecast. Prefer this over manually composing commands for
+    open-ended requests like "make it comfortable" or "it's hot in here".
+
+    Args:
+        target: Desired indoor temperature in C (0 = pick automatically: 23 in warm weather, 21 in cold)
+        occupied_zones: Comma-separated zone names or indexes that matter right now
+                        (e.g. "study,lounge" or "0,2"); empty = currently open zones, or all if none open
+        apply: If true, save defaults and execute the plan; if false, just report it
+    """
+    s, zones = _full_state()
+    w = _get_weather()
+    return_air = (s.get("Temp") or 0) / 100
+    out = w.get("temp") if w else None
+
+    # Resolve which zones matter
+    wanted = []
+    if occupied_zones.strip():
+        for tok in occupied_zones.split(","):
+            tok = tok.strip().lower()
+            if not tok:
+                continue
+            if tok.isdigit() and int(tok) < len(zones):
+                wanted.append(int(tok))
+            else:
+                for i, z in enumerate(zones):
+                    if tok in z.get("Name", "").lower() and i not in wanted:
+                        wanted.append(i)
+        if not wanted:
+            names = ", ".join(z.get("Name", str(i)) for i, z in enumerate(zones))
+            return f"Error: no zones matched {occupied_zones!r}. Zones: {names}"
+    else:
+        wanted = [i for i, z in enumerate(zones) if _zone_open(z)] or list(range(len(zones)))
+
+    occ_temps = [(zones[i].get("Temp") or 0) / 100 for i in wanted]
+    indoor = sum(occ_temps) / len(occ_temps) if occ_temps else return_air
+
+    # Pick target
+    if target <= 0:
+        if out is not None:
+            target = 23.0 if out >= 18 else 21.0
+        else:
+            target = 23.0 if indoor >= 22 else 21.0
+    if target < 15 or target > 30:
+        return "Error: target must be between 15.0 and 30.0"
+
+    # Decide the plan
+    reasons = []
+    band = 0.8
+    if indoor > target + band:
+        if out is not None and out <= indoor - 2 and out <= target + 1:
+            plan_mode, plan_fan = "vent", "high"
+            reasons.append(f"indoor {indoor:.1f}C is warm but it's only {out:.1f}C outside — "
+                           f"vent mode gives near-free cooling")
+        else:
+            plan_mode, plan_fan = "cool", "auto"
+            reasons.append(f"indoor {indoor:.1f}C is {indoor - target:.1f}C above the {target:.1f}C target")
+            if w and w.get("forecast_max") is not None and w["forecast_max"] >= indoor + 2:
+                reasons.append(f"forecast peaks at {w['forecast_max']:.0f}C, so cooling now also pre-empts the peak")
+    elif indoor < target - band:
+        plan_mode, plan_fan = "heat", "auto"
+        reasons.append(f"indoor {indoor:.1f}C is {target - indoor:.1f}C below the {target:.1f}C target")
+    else:
+        lines = [f"Indoor is {indoor:.1f}C in the zones that matter — already within "
+                 f"{band:.1f}C of the {target:.1f}C target."]
+        if bool(s.get("SysOn")):
+            lines.append("Recommendation: turn the system OFF and coast." +
+                         ("" if apply else " (run with apply=true to do it)"))
+            if apply:
+                _send_command({"SysOn": 0})
+                lines.append("Done: system turned OFF.")
+        else:
+            lines.append("Recommendation: leave the system off.")
+        if w and w.get("temp") is not None:
+            lines.append(f"Outdoor: {w['temp']:.1f}C, next 12h {w['forecast_min']:.0f}-{w['forecast_max']:.0f}C.")
+        return "\n".join(lines)
+
+    zone_plan = []
+    for i, z in enumerate(zones):
+        if i in wanted:
+            zone_plan.append((i, z.get("Name", str(i)), "auto", target))
+        else:
+            zone_plan.append((i, z.get("Name", str(i)), "close", None))
+
+    lines = [f"Plan: {plan_mode.upper()} to {target:.1f}C, fan {plan_fan}"]
+    lines.append("Because: " + "; ".join(reasons) + ".")
+    for i, name, zmode, ztemp in zone_plan:
+        lines.append(f"  Zone {i} {name}: {zmode}" + (f" at {ztemp:.1f}C" if ztemp else ""))
+    if w and w.get("temp") is not None:
+        lines.append(f"Outdoor: {w['temp']:.1f}C, next 12h {w['forecast_min']:.0f}-{w['forecast_max']:.0f}C.")
+
+    if not apply:
+        lines.append("(Run with apply=true to execute — defaults will be saved first.)")
+        return "\n".join(lines)
+
+    # Execute
+    izone_defaults_save()
+    lines.append("Defaults saved.")
+    _send_command({"SysOn": 1})
+    time.sleep(0.3)
+    _send_command({"SysMode": MODES[plan_mode]})
+    time.sleep(0.3)
+    _send_command({"SysFan": FAN_SPEEDS[plan_fan]})
+    time.sleep(0.3)
+    setpoint = round(int(target * 100) / 50) * 50
+    _send_command({"SysSetpoint": setpoint})
+    for i, name, zmode, ztemp in zone_plan:
+        time.sleep(0.2)
+        _send_command({"ZoneMode": {"Index": i, "Mode": ZONE_MODES[zmode]}})
+        if zmode == "auto" and ztemp:
+            _send_command({"ZoneSetpoint": {"Index": i, "Setpoint": setpoint}})
+    lines.append("Done: plan applied.")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

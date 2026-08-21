@@ -101,6 +101,35 @@ Creates or updates a profile from parameters without changing the AC. Useful for
 - `zones`: Zone configs as `"index:temp,index:temp"` (e.g., `"2:22,5:23"`) — listed zones are set to auto mode (optional)
 - `close_others`: Close zones not listed (default: true)
 
+### `izone_insights`
+
+No arguments. Polls the full system, outdoor weather, and 24h of logged history, then reports: zones far from setpoint, the system working against itself (e.g. cooling below target), free-cooling opportunities, pre-conditioning suggestions from the forecast, air-quality warnings (eCO2 > 1000 ppm, TVOC > 500 ppb, humidity > 65%), energy suggestions, and zones that chronically miss setpoint across the day.
+
+### `izone_recommend`
+
+- `target` (float, optional) — desired indoor temp; 0 picks automatically (23C warm weather, 21C cold)
+- `occupied_zones` (string, optional) — comma-separated zone names or indexes that matter now; empty = currently open zones
+- `apply` (bool, default false) — false reports the plan; true saves defaults and executes it
+
+Weighs indoor readings against outdoor conditions and the 12h forecast. Chooses vent mode for free cooling when outdoor air can do the job, cool/heat otherwise, or recommends switching off when already comfortable. Opens occupied zones at the target and closes the rest.
+
+### `izone_history`
+
+- `hours` (float, default 24) — look-back window
+- `zone` (string, optional) — zone name (or fragment) to focus on
+
+Summarizes logged snapshots: per-zone now/min/avg/max, trend arrow, sparkline, and system duty cycle. Snapshots are appended automatically by every full status poll to `~/.config/izone/history.jsonl` (rotated at ~4MB).
+
+### `izone_set_location`
+
+- `place` (string) — suburb/city, e.g. "Perth" or "Baldivis WA"
+
+One-time setup. Geocodes via Open-Meteo (no API key) and stores lat/lon in `~/.config/izone/config.json`. Enables the outdoor line in status and all weather-aware behavior. Without a location, weather features silently skip.
+
+### `izone_sleep`
+
+- `minutes` (int) — minutes until auto-off, 0-720; 0 clears the timer
+
 ## Zone Discovery
 
 Zone indexes and names are specific to your iZone installation. Use `izone_status` (or `izone status` from the CLI) to see your available zones. The MCP server dynamically queries zone count and names from your bridge.

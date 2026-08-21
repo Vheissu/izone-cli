@@ -125,6 +125,13 @@ Restart your MCP client after adding the configuration.
 | `izone_apply_profile` | Apply a named profile (mode, fan, temp, zones) |
 | `izone_save_profile` | Save current settings as a named profile |
 | `izone_create_profile` | Define a profile from parameters without changing the AC |
+| `izone_insights` | Health/efficiency review: struggling zones, free-cooling, air quality |
+| `izone_recommend` | Weather-aware plan (mode/temp/zones) — report it or apply it |
+| `izone_history` | Per-zone temperature trends and sparklines from logged snapshots |
+| `izone_set_location` | One-time home location setup for outdoor-weather features |
+| `izone_sleep` | Sleep timer (auto-off after N minutes) |
+| `izone_defaults_save` / `izone_defaults_restore` | Snapshot and restore normal settings |
+| `izone_schedules` / `izone_schedule_detail` / `izone_schedule_edit` / `izone_run_schedule` | Schedule management |
 
 ### Example Prompts
 
@@ -133,6 +140,21 @@ Restart your MCP client after adding the configuration.
 - "Cool the master bedroom and lounge to 22, close everything else"
 - "Turn off the AC"
 - "Set the fan to low and drop the temp to 21"
+
+## Intelligence
+
+The MCP server keeps a local history and understands the weather:
+
+- Every full status poll appends a snapshot (system, zones, outdoor temp) to
+  `~/.config/izone/history.jsonl` (auto-rotated at ~4MB). `izone_history` turns it into
+  per-zone trends; `izone_insights` uses it to spot zones that chronically miss setpoint.
+- Set a home location once with `izone_set_location` ("Perth") and status, insights, and
+  recommendations become outdoor-aware: free-cooling detection (vent mode when it's cooler
+  outside), pre-cooling/pre-heating ahead of forecast peaks, and smarter mode selection.
+  Weather comes from Open-Meteo (free, no API key); with no location configured, all
+  weather features silently skip. Config lives in `~/.config/izone/config.json`.
+- `izone_recommend` composes it all into one plan — occupied zones, target temp, mode,
+  fan — and can apply it (saving defaults first so it's reversible).
 
 ## Bridge Discovery
 
